@@ -22,13 +22,21 @@ class AdminPanel(tk.Frame):
 #=================================Widgets================================================
     def create_widgets(self):
         tk.Label(self, text="Admin Panel", font=("Arial", 16)).pack(pady=10)
-        #Logout Button
+        # Logout Button
         tk.Button(self, text="Logout", command=self.logout).pack(pady=20)
 
-        #--------------------Attacker Log Section--------------------
-        tk.Label(self, text="Attacker's Log", font=("Arial", 12)).pack(pady=5)
+        # Create a PanedWindow to divide the left and right sections
+        paned_window = tk.PanedWindow(self, orient="horizontal")
+        paned_window.pack(fill="both", expand=True)
+
+        # Left side for Attacker Logs
+        left_frame = tk.Frame(paned_window)
+        paned_window.add(left_frame, width=400)  # Set a fixed width for the left pane
+
+        # --------------------Attacker Log Section--------------------
+        tk.Label(left_frame, text="Attacker's Log", font=("Arial", 12)).pack(pady=5)
         columns = ("timestamp", "username", "password", "ip", "port")
-        self.log_table = ttk.Treeview(self, columns=columns, show="headings", height=8)
+        self.log_table = ttk.Treeview(left_frame, columns=columns, show="headings", height=8)
 
         self.log_table.heading("timestamp", text="Timestamp")
         self.log_table.heading("username", text="Username")
@@ -43,27 +51,41 @@ class AdminPanel(tk.Frame):
         self.log_table.column("port", width=60)
 
         self.log_table.pack(pady=10)
-        tk.Button(self, text="View Full Attacker Log", command=lambda: self.view_logs(latest_only=False)).pack(pady=10)
+        tk.Button(left_frame, text="View Full Attacker Log", command=lambda: self.view_logs(latest_only=False)).pack(pady=10)
 
-        #--------------------Port Control Section--------------------
-        tk.Label(self, text="Active Ports", font=("Arial", 12)).pack(pady=5)
+        # Right side for Port Settings
+        right_frame = tk.Frame(paned_window)
+        paned_window.add(right_frame, width=500)  # Set a fixed width for the right pane
 
-        self.port_status_text = tk.Text(self, height=7, width=60, state="disabled")
-        self.port_status_text.pack(pady=5)
+        # --------------------Port Control Section--------------------
+        tk.Label(right_frame, text="Active Ports", font=("Arial", 12)).pack(pady=5)
 
-        self.port_button = tk.Button(self, text="View Full Port Status", command=self.view_ports_full)
-        self.port_button.pack(pady=5)
+        # Ports table similar to attacker log
+        columns_ports = ("port", "status", "honeypot", "last_triggered")
+        self.port_table = ttk.Treeview(right_frame, columns=columns_ports, show="headings", height=8)
 
-        #--------------------Port Toggle Controls--------------------
-        tk.Label(self, text="Select a Port to Manage", font=("Arial", 12)).pack(pady=5)
+        self.port_table.heading("port", text="Port")
+        self.port_table.heading("status", text="Status")
+        self.port_table.heading("honeypot", text="Honeypot")
+        self.port_table.heading("last_triggered", text="Last Triggered")
 
-        self.port_selector = ttk.Combobox(self, state="readonly")
+        self.port_table.column("port", width=60)
+        self.port_table.column("status", width=80)
+        self.port_table.column("honeypot", width=80)
+        self.port_table.column("last_triggered", width=150)
+
+        self.port_table.pack(pady=10)
+        tk.Button(right_frame, text="View Full Port Status", command=self.view_ports_full).pack(pady=10)
+
+        # --------------------Port Toggle Controls--------------------
+        tk.Label(right_frame, text="Select a Port to Manage", font=("Arial", 12)).pack(pady=5)
+
+        self.port_selector = ttk.Combobox(right_frame, state="readonly")
         self.port_selector.pack(pady=5)
         self.refresh_port_list()  # Populate it on load
 
-        tk.Button(self, text="Toggle Port Status", command=self.toggle_port_status).pack(pady=3)
-        tk.Button(self, text="Toggle Honeypot", command=self.toggle_honeypot).pack(pady=3)
-
+        tk.Button(right_frame, text="Toggle Port Status", command=self.toggle_port_status).pack(pady=3)
+        tk.Button(right_frame, text="Toggle Honeypot", command=self.toggle_honeypot).pack(pady=3)
 
 #==============================Attackers Log==============================
     def view_logs(self, latest_only=False):
@@ -104,18 +126,63 @@ class AdminPanel(tk.Frame):
         if latest_only:
             active_ports = active_ports[:5]
 
-        self.port_status_text.configure(state="normal")
-        self.port_status_text.delete(1.0, tk.END)
+        for item in self.port_table.get_children():
+            self.port_table.delete(item)
+
         for port in active_ports:
             honeypot = "ON" if port.get("honeypot") else "OFF"
-            self.port_status_text.insert(
-                tk.END,
-                f"Port {port.get('port')} | Status: Active | Honeypot: {honeypot}\n"
+            self.port_table.insert(
+                "", "end", values=(
+                    port.get("port", "N/A"),
+                    port.get("status", "N/A"),
+                    honeypot,
+                    port.get("last_triggered", "N/A")
+                )
             )
-        self.port_status_text.configure(state="disabled")
 
     def view_ports_full(self):
         self.view_ports(latest_only=False)
+
+#==============================Toggle port======================
+    def refresh_port_list(self):
+        try:
+            response = requests.get(f"{SERVER_URL}/ports")
+            ports = response.json()
+            port_list = [str(p["port"]) for p in ports]
+            self.port_selector['values'] = port_list
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load ports: {e}")
+
+    def toggle_port_status(self):
+        selected = self.port_selector.get()
+        if not selected:
+            messagebox.showwarning("Select Port", "Please select a port.")
+            return
+        try:
+            response = requests.post(f"{SERVER_URL}/update_port", json={"port": int(selected), "status": "inactive"})
+            if response.status_code == 200:
+                messagebox.showinfo("Success", f"Port {selected} status toggled.")
+                self.view_ports()
+            else:
+                messagebox.showerror("Error", response.text)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to toggle port: {e}")
+
+#==============================Honeypot port======================
+    def toggle_honeypot(self):
+        selected = self.port_selector.get()
+        if not selected:
+            messagebox.showwarning("Select Port", "Please select a port.")
+            return
+        try:
+            response = requests.post(f"{SERVER_URL}/update_port", json={"port": int(selected), "honeypot": True})
+            if response.status_code == 200:
+                messagebox.showinfo("Success", f"Honeypot for Port {selected} toggled.")
+                self.view_ports()
+            else:
+                messagebox.showerror("Error", response.text)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to toggle honeypot: {e}")
 
 #==============================Logout==============================
     def logout(self):
