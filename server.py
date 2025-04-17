@@ -139,7 +139,7 @@ def load_ports():
         with open(PORTS_DB, "r") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+        return []
 
 def save_ports(data):
     with open(PORTS_DB, "w") as f:
@@ -155,14 +155,24 @@ def get_ports():
 @app.route("/update_port", methods=["POST"])
 def update_port():
     data = request.json
-    port = str(data.get("port"))
-    status = data.get("status")
-    firewall = data.get("firewall")
+    port = data.get("port")
+    new_status = data.get("status")
+    new_honeypot = data.get("honeypot")
 
     ports = load_ports()
-    if port not in ports:
-        ports[port] = {}
-    ports[port].update({"status": status, "firewall": firewall})
+    found = False
+
+    for p in ports:
+        if p["port"] == port:
+            if new_status is not None:
+                p["status"] = new_status
+            if new_honeypot is not None:
+                p["honeypot"] = new_honeypot
+            found = True
+            break
+
+    if not found:
+        return jsonify({"status": "error", "message": "Port not found"}), 404
 
     save_ports(ports)
     return jsonify({"status": "success", "message": "Port updated"})
