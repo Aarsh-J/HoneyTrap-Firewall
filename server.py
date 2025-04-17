@@ -106,6 +106,16 @@ def login():
 
     return jsonify({"status": "error", "message": "Incorrect username/password"})
 
+#--------------Attacker route--------------------
+@app.route('/attackers', methods=['GET'])
+def get_attackers():
+    try:
+        with open("attackers.json", "r") as f:
+            attackers = json.load(f)
+    except FileNotFoundError:
+        attackers = []
+    return jsonify(attackers)
+
 # -------------------------------
 # 🔄 Update Last Activity Endpoint
 # -------------------------------
