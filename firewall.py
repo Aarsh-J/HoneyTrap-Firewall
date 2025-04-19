@@ -30,7 +30,7 @@ BANNED_IPS = "banned_ips.json"
 
 ADMIN_USERNAME = "aarsh"
 ADMIN_PASSWORD = "00186"
-INACTIVITY_LIMIT = 300  # 5 minutes
+INACTIVITY_LIMIT = 300  # 5 minutes for inactivity timeout
 
 # Track login attempts
 LOGIN_ATTEMPTS = {}
@@ -112,38 +112,16 @@ def check_login(username, password, ip_address, port):
     key = f"{username}:{ip_address}"
     LOGIN_ATTEMPTS[key] = LOGIN_ATTEMPTS.get(key, 0) + 1
     
-    # Check number of failed attempts
-    if LOGIN_ATTEMPTS[key] >= 3:
-        # Three or more failed attempts - activate honeypot and log as attacker
-        attackers.append({
-            "username": username,
-            "password": password,
-            "ip": ip_address,
-            "attempted_port": port,
-            "reason": "3+ failed login attempts",
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-        })
-        save_json(ATTACKER_LOG, attackers)
-        
-        # Enable honeypot on this port
-        for p in ports:
-            if str(p["port"]) == str(port):
-                p["honeypot"] = True
-                p["last_triggered"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                break
-        save_json(PORTS_DB, ports)
-        
-        return "fake", None
-    
-    elif LOGIN_ATTEMPTS[key] >= 2:
-        # Two failed attempts - flag as potential attacker but no honeypot yet
+    # Check number of failed attempts - Allow 2 incorrect attempts
+    if LOGIN_ATTEMPTS[key] >= 2:
+        # Two or more failed attempts - flag as a potential attacker (but don't ban)
+        # Record the failed attempt
         potential_attacker_entry = {
             "username": username,
-            "password": password,
             "ip": ip_address,
             "attempted_port": port,
             "attempts": LOGIN_ATTEMPTS[key],
-            "reason": "2 failed login attempts",
+            "reason": "2 or more failed login attempts",
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
         }
         
@@ -159,8 +137,17 @@ def check_login(username, password, ip_address, port):
             potential_attackers.append(potential_attacker_entry)
         
         save_json(POTENTIAL_ATTACKERS, potential_attackers)
-        return "error", "Incorrect username/password"
-
+        
+        # Enable honeypot on this port
+        for p in ports:
+            if str(p["port"]) == str(port):
+                p["honeypot"] = True
+                p["last_triggered"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                break
+        save_json(PORTS_DB, ports)
+        
+        return "fake", None
+    
     return "error", "Incorrect username/password"
 
 def check_inactivity():
@@ -200,6 +187,19 @@ def check_inactivity():
                 potential_attackers.append(potential_attacker_entry)
             
             save_json(POTENTIAL_ATTACKERS, potential_attackers)
+            
+            # Don't automatically ban, just flag them
+            
+            # Enable honeypot for this session's port
+            ports = load_json(PORTS_DB)
+            for p in ports:
+                if str(p["port"]) == str(port):
+                    p["honeypot"] = True
+                    p["last_triggered"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                    break
+            save_json(PORTS_DB, ports)
+            
+            # Remove the session
             del sessions[username]
 
     save_json(SESSIONS_DB, sessions)
