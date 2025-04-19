@@ -102,6 +102,7 @@ def get_banned_ips():
 @app.route("/active_users", methods=["GET"])
 def get_active_users():
     return jsonify(firewall.get_active_users())
+
 @app.route("/ports", methods=["GET"])
 def get_ports():
     return jsonify(firewall.get_ports())
