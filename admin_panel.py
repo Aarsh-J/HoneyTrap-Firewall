@@ -18,7 +18,7 @@ class AdminPanel(tk.Frame):
         self.create_widgets()
 
         # Initial data load
-        self.view_logs(latest_only=True)
+        self.view_logs()
         self.view_ports(latest_only=True)
         
         # Auto-refresh data every 30 seconds
@@ -37,34 +37,24 @@ class AdminPanel(tk.Frame):
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
         
-        # Tab 1: Attacker Logs
-        self.attacker_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.attacker_tab, text="Attacker Logs")
+        # Tab 1: Attackers Management (merged attackers and potential attackers)
+        self.attackers_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.attackers_tab, text="Attackers Management")
         
-        # Tab 2: Potential Attackers
-        self.potential_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.potential_tab, text="Potential Attackers")
-        
-        # Tab 3: Banned IPs
-        self.banned_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.banned_tab, text="Banned IPs")
-        
-        # Tab 4: Active Users
+        # Tab 2: Active Users
         self.users_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.users_tab, text="Active Users")
         
-        # Tab 5: Ports Management
+        # Tab 3: Ports Management
         self.ports_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.ports_tab, text="Ports Management")
         
-        # Tab 6: System Status
+        # Tab 4: System Status
         self.status_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.status_tab, text="System Status")
         
         # Set up each tab's content
-        self.setup_attacker_tab()
-        self.setup_potential_tab()
-        self.setup_banned_tab()
+        self.setup_attackers_tab()
         self.setup_users_tab()
         self.setup_ports_tab()
         self.setup_status_tab()
@@ -73,12 +63,26 @@ class AdminPanel(tk.Frame):
         tk.Button(self, text="Logout", command=self.logout).pack(pady=10)
 
 #==============================Tab Setup Methods==============================
-    def setup_attacker_tab(self):
-        tk.Label(self.attacker_tab, text="Attacker Activities", font=("Arial", 16)).pack(pady=10)
+    def setup_attackers_tab(self):
+        """Setup the merged attackers management tab"""
+        # Use a notebook inside this tab to organize content
+        attackers_notebook = ttk.Notebook(self.attackers_tab)
+        attackers_notebook.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        # Sub-tab 1: All Attackers
+        attackers_tab = ttk.Frame(attackers_notebook)
+        attackers_notebook.add(attackers_tab, text="All Attackers")
+        
+        # Sub-tab 2: Banned IPs
+        banned_tab = ttk.Frame(attackers_notebook)
+        attackers_notebook.add(banned_tab, text="Banned IPs")
+        
+        # Setup All Attackers sub-tab
+        tk.Label(attackers_tab, text="Attacker Activities", font=("Arial", 16)).pack(pady=10)
         
         # Create Treeview for logs
-        columns = ("timestamp", "username", "password", "ip", "port", "reason")
-        self.log_table = ttk.Treeview(self.attacker_tab, columns=columns, show="headings")
+        columns = ("timestamp", "username", "ip", "port", "reason", "actions")
+        self.log_table = ttk.Treeview(attackers_tab, columns=columns, show="headings")
 
         for col in columns:
             self.log_table.heading(col, text=col.capitalize())
@@ -86,68 +90,31 @@ class AdminPanel(tk.Frame):
         # Adjust column widths
         self.log_table.column("timestamp", width=150, anchor="center")
         self.log_table.column("username", width=100, anchor="center")
-        self.log_table.column("password", width=100, anchor="center")
         self.log_table.column("ip", width=100, anchor="center")
         self.log_table.column("port", width=80, anchor="center")
         self.log_table.column("reason", width=200, anchor="center")
+        self.log_table.column("actions", width=100, anchor="center")
 
         self.log_table.pack(fill="both", expand=True, padx=5, pady=5)
         
         # Add a scroll bar
-        scrollbar = ttk.Scrollbar(self.attacker_tab, orient="vertical", command=self.log_table.yview)
+        scrollbar = ttk.Scrollbar(attackers_tab, orient="vertical", command=self.log_table.yview)
         scrollbar.pack(side="right", fill="y")
         self.log_table.configure(yscrollcommand=scrollbar.set)
         
-        # Buttons frame
-        button_frame = tk.Frame(self.attacker_tab)
+        # Button frame for attackers
+        button_frame = tk.Frame(attackers_tab)
         button_frame.pack(pady=10)
         
-        tk.Button(button_frame, text="View Latest Logs", command=lambda: self.view_logs(latest_only=True)).pack(side="left", padx=5)
-        tk.Button(button_frame, text="View All Logs", command=lambda: self.view_logs(latest_only=False)).pack(side="left", padx=5)
-
-    def setup_potential_tab(self):
-        """Setup the potential attackers tab"""
-        tk.Label(self.potential_tab, text="Potential Attackers", font=("Arial", 16)).pack(pady=10)
+        tk.Button(button_frame, text="Refresh", command=self.view_logs).pack(side="left", padx=5)
+        tk.Button(button_frame, text="Ban Selected IP", command=self.ban_selected_attacker).pack(side="left", padx=5)
         
-        # Create Treeview for potential attackers
-        columns = ("timestamp", "username", "ip", "port", "reason", "actions")
-        self.potential_table = ttk.Treeview(self.potential_tab, columns=columns, show="headings")
-
-        for col in columns:
-            self.potential_table.heading(col, text=col.capitalize())
-
-        # Adjust column widths
-        self.potential_table.column("timestamp", width=150, anchor="center")
-        self.potential_table.column("username", width=100, anchor="center")
-        self.potential_table.column("ip", width=100, anchor="center")
-        self.potential_table.column("port", width=80, anchor="center")
-        self.potential_table.column("reason", width=200, anchor="center")
-        self.potential_table.column("actions", width=100, anchor="center")
-
-        self.potential_table.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # Add a scroll bar
-        scrollbar = ttk.Scrollbar(self.potential_tab, orient="vertical", command=self.potential_table.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.potential_table.configure(yscrollcommand=scrollbar.set)
-        
-        # Actions frame
-        action_frame = tk.Frame(self.potential_tab)
-        action_frame.pack(pady=10)
-        
-        tk.Button(action_frame, text="Refresh", command=self.view_potential_attackers).pack(side="left", padx=5)
-        tk.Button(action_frame, text="Ban Selected IP", command=self.ban_selected_ip).pack(side="left", padx=5)
-        
-        # Load initial data
-        self.view_potential_attackers()
-    
-    def setup_banned_tab(self):
-        """Setup the banned IPs tab"""
-        tk.Label(self.banned_tab, text="Banned IP Addresses", font=("Arial", 16)).pack(pady=10)
+        # Setup Banned IPs sub-tab
+        tk.Label(banned_tab, text="Banned IP Addresses", font=("Arial", 16)).pack(pady=10)
         
         # Create Treeview for banned IPs
         columns = ("ip", "actions")
-        self.banned_table = ttk.Treeview(self.banned_tab, columns=columns, show="headings")
+        self.banned_table = ttk.Treeview(banned_tab, columns=columns, show="headings")
 
         for col in columns:
             self.banned_table.heading(col, text=col.capitalize())
@@ -159,12 +126,12 @@ class AdminPanel(tk.Frame):
         self.banned_table.pack(fill="both", expand=True, padx=5, pady=5)
         
         # Add a scroll bar
-        scrollbar = ttk.Scrollbar(self.banned_tab, orient="vertical", command=self.banned_table.yview)
+        scrollbar = ttk.Scrollbar(banned_tab, orient="vertical", command=self.banned_table.yview)
         scrollbar.pack(side="right", fill="y")
         self.banned_table.configure(yscrollcommand=scrollbar.set)
         
-        # Actions frame
-        action_frame = tk.Frame(self.banned_tab)
+        # Actions frame for banned IPs
+        action_frame = tk.Frame(banned_tab)
         action_frame.pack(pady=10)
         
         tk.Button(action_frame, text="Refresh", command=self.view_banned_ips).pack(side="left", padx=5)
@@ -174,7 +141,7 @@ class AdminPanel(tk.Frame):
         self.view_banned_ips()
     
     def setup_users_tab(self):
-        """Setup the active users tab"""
+        """Setup the active users tab with ban functionality"""
         tk.Label(self.users_tab, text="Active Users", font=("Arial", 16)).pack(pady=10)
         
         # Create Treeview for active users
@@ -205,6 +172,7 @@ class AdminPanel(tk.Frame):
         action_frame.pack(pady=10)
         
         tk.Button(action_frame, text="Refresh", command=self.view_active_users).pack(side="left", padx=5)
+        tk.Button(action_frame, text="Ban Selected User", command=self.ban_selected_user).pack(side="left", padx=5)
         
         # Load initial data
         self.view_active_users()
@@ -319,10 +287,9 @@ class AdminPanel(tk.Frame):
         while True:
             try:
                 # Update UI in the main thread
-                self.master.after(0, self.view_logs, True)  # True for latest_only
+                self.master.after(0, self.view_logs)  
                 self.master.after(0, self.view_ports, True)
                 self.master.after(0, self.update_system_status)
-                self.master.after(0, self.view_potential_attackers)
                 self.master.after(0, self.view_banned_ips)
                 self.master.after(0, self.view_active_users)
             except Exception as e:
@@ -332,30 +299,56 @@ class AdminPanel(tk.Frame):
             time.sleep(30)
 
 #==============================Attackers Log==============================
-    def view_logs(self, latest_only=False):
+    def view_logs(self):
         try:
             response = requests.get(f"{SERVER_URL}/attackers")
             logs = response.json()
+            
+            # Also get potential attackers and merge them
+            response_potential = requests.get(f"{SERVER_URL}/potential_attackers")
+            potential_attackers = response_potential.json()
+            
+            # Combine both lists
+            all_attackers = logs + potential_attackers
+            
+            # Sort by timestamp descending
+            all_attackers.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to fetch logs: {e}")
+            messagebox.showerror("Error", f"Failed to fetch attackers: {e}")
             return
-
-        logs.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
-        if latest_only:
-            logs = logs[:5]
 
         for item in self.log_table.get_children():
             self.log_table.delete(item)
 
-        for entry in logs:
+        for entry in all_attackers:
             self.log_table.insert("", "end", values=(
                 entry.get("timestamp", "N/A"),
                 entry.get("username", "N/A"),
-                entry.get("password", "N/A"),
                 entry.get("ip", "N/A"),
                 entry.get("attempted_port", "N/A"),
-                entry.get("reason", "Login attempt")
+                entry.get("reason", "N/A"),
+                "Ban"
             ))
+
+    def ban_selected_attacker(self):
+        selected_item = self.log_table.selection()
+        if not selected_item:
+            messagebox.showwarning("Select Entry", "Please select an entry to ban.")
+            return
+        
+        # Get the IP from the selected item
+        ip = self.log_table.item(selected_item[0])['values'][2]  # IP is at index 2
+        
+        try:
+            response = requests.post(f"{SERVER_URL}/ban_ip", json={"ip": ip})
+            if response.status_code == 200:
+                messagebox.showinfo("Success", f"IP {ip} has been banned.")
+                self.view_logs()
+                self.view_banned_ips()
+            else:
+                messagebox.showerror("Error", response.text)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to ban IP: {e}")
 
 #==============================Potential Attackers==============================
     def view_potential_attackers(self):
@@ -456,6 +449,28 @@ class AdminPanel(tk.Frame):
                 user.get("inactive_for", "N/A")
             ))
 
+    def ban_selected_user(self):
+        """Ban the IP of the selected user"""
+        selected_item = self.users_table.selection()
+        if not selected_item:
+            messagebox.showwarning("Select User", "Please select a user to ban.")
+            return
+        
+        # Get the IP from the selected item
+        ip = self.users_table.item(selected_item[0])['values'][1]  # IP is at index 1
+        
+        if messagebox.askyesno("Confirm Ban", f"Are you sure you want to ban IP {ip}?"):
+            try:
+                response = requests.post(f"{SERVER_URL}/ban_ip", json={"ip": ip})
+                if response.status_code == 200:
+                    messagebox.showinfo("Success", f"IP {ip} has been banned.")
+                    self.view_active_users()
+                    self.view_banned_ips()
+                else:
+                    messagebox.showerror("Error", response.text)
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to ban IP: {e}")
+
 #==============================Ports Section==============================
     def view_ports(self, latest_only=True):
         try:
@@ -553,6 +568,14 @@ class AdminPanel(tk.Frame):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to toggle honeypot: {e}")
 
+#==============================Logout==============================
+    def logout(self):
+        if hasattr(self.master, 'show_frame'):
+            # Using string to avoid circular import issues
+            self.master.show_frame("LoginPage")
+        else:
+            self.master.destroy()
+
 #==============================System Status==============================
     def update_system_status(self):
         """Update the system status indicators"""
@@ -596,17 +619,3 @@ class AdminPanel(tk.Frame):
         except Exception as e:
             print(f"Error updating system status: {e}")
             self.server_status.set("Error")
-
-#==============================Logout==============================
-    def logout(self):
-        if hasattr(self.master, 'show_frame'):
-            # Using string to avoid circular import issues
-            self.master.show_frame("LoginPage")
-        else:
-            self.master.destroy()
-
-#==============================Run GUI==============================
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = AdminPanel(root)
-    root.mainloop()
