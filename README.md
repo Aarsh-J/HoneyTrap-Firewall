@@ -1,4 +1,3 @@
-# HoneyTrap-Firewall
 # HoneyTrap Firewall
 
 A comprehensive security system for detecting and monitoring potential network attackers using honeypot technology.
