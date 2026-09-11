@@ -166,6 +166,16 @@ A: "It's not perfect — a couple of failed attempts is a simple heuristic, not
 real behavioral analysis. This project was about demonstrating the concept,
 not enterprise-grade detection."
 
+**Q: The README mentions port stealth from nmap — how does that work?**
+A: "Inactive ports just aren't listened on, so a scanner gets the OS's
+normal 'closed' response — same as any unused port on any machine. That's
+not real stealth though. Genuine invisibility to a scanner means silently
+dropping the incoming SYN packet so there's no response at all, which
+nmap reports as 'filtered' — that needs firewall-level or raw-packet access
+(like an iptables rule or packet interception), which is below what a
+plain Python socket program can reliably do cross-platform without elevated
+privileges. I scoped that out rather than fake it."
+
 **Q: Are passwords stored securely?**
 A: "Yes — hashed with a per-user random salt using PBKDF2 (100,000 rounds),
 and verified with a constant-time comparison so even if the storage file

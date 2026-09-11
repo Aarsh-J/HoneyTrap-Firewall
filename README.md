@@ -20,7 +20,9 @@ HoneyTrap Firewall is a sophisticated security system that employs deception-bas
 - Real-time activity monitoring
 
 ### Advanced Port Management
-- Port visibility control (hides ports from nmap scans)
+- Ports can be marked active/inactive; inactive ports simply aren't listened
+  on, so a scan sees the OS's normal "closed" response (RST) rather than any
+  active deception — see the Port Stealth note under Security Features
 - Individual port status (active/inactive)
 - Honeypot capability per port
 
@@ -59,7 +61,12 @@ When a user attempts to log in, their credentials and behavior are analyzed by t
 
 In honeypot mode, users are redirected to a fake interface that appears legitimate but actually monitors their actions and collects information. This allows administrators to study potential attack patterns while keeping the real system safe.
 
-The port stealth feature implements RST packet handling to make inactive ports invisible to network scanning tools like nmap, adding another layer of security.
+Inactive ports are simply not listened on, so a scan sees a normal "closed"
+response from the OS TCP stack. Making a port genuinely invisible to a
+scanner (nmap reporting "filtered" rather than "closed") requires silently
+dropping SYN packets at the firewall/OS level, which is out of scope for a
+plain Python socket program without raw-packet/firewall access — see the
+Port Stealth note under Security Features.
 
 ## File Structure
 
@@ -145,7 +152,14 @@ To run the HoneyTrap Firewall in a multi-PC environment:
 ## Security Features
 
 ### Port Stealth
-Inactive ports are hidden from nmap scans using a technique that responds with RST packets to scanning attempts.
+Inactive ports simply aren't listened on, so the OS TCP stack replies with a
+normal RST — nmap reports this as "closed", the same as any unused port on
+any machine. This is *not* true stealth: genuinely hiding a port (nmap
+reporting "filtered", i.e. no response at all) requires dropping incoming
+SYN packets at the firewall/OS level (e.g. an `iptables`/Windows Firewall
+rule, or raw-packet interception), which needs privileges and platform
+access beyond what a portable Python socket program can rely on. This is a
+known, deliberate scope limitation rather than an implemented feature.
 
 ### Honeypot Mode
 When enabled on a port, all connections to that port are redirected to a fake interface that mimics legitimate functionality while monitoring activity.

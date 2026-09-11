@@ -1,0 +1,186 @@
+import pytest
+
+from honeytrap import firewall
+
+
+@pytest.fixture
+def fw(tmp_path, monkeypatch):
+    """Point firewall.py's storage constants at a temp directory and reset
+    per-process state, so tests never touch the real data/ directory and
+    don't leak state between tests."""
+    monkeypatch.setattr(firewall, "USER_DB", str(tmp_path / "users.json"))
+    monkeypatch.setattr(firewall, "SESSIONS_DB", str(tmp_path / "sessions.json"))
+    monkeypatch.setattr(firewall, "PORTS_DB", str(tmp_path / "ports.json"))
+    monkeypatch.setattr(firewall, "BANNED_IPS", str(tmp_path / "banned_ips.json"))
+    monkeypatch.setattr(firewall, "POTENTIAL_ATTACKERS", str(tmp_path / "potential_attackers.json"))
+    monkeypatch.setattr(firewall, "ATTACKER_LOG", str(tmp_path / "attackers.json"))
+    monkeypatch.setattr(firewall, "LOGIN_ATTEMPTS", {})
+
+    firewall.initialize_files()
+    return firewall
+
+
+# ----------------------
+# Password hashing
+# ----------------------
+
+def test_hash_and_verify_password_roundtrip(fw):
+    hash_hex, salt_hex = fw.hash_password("correct-horse")
+    assert fw.verify_password("correct-horse", salt_hex, hash_hex) is True
+
+
+def test_verify_password_rejects_wrong_password(fw):
+    hash_hex, salt_hex = fw.hash_password("correct-horse")
+    assert fw.verify_password("wrong-password", salt_hex, hash_hex) is False
+
+
+def test_hash_password_uses_random_salt_by_default(fw):
+    hash1, salt1 = fw.hash_password("same-password")
+    hash2, salt2 = fw.hash_password("same-password")
+    assert salt1 != salt2
+    assert hash1 != hash2
+
+
+# ----------------------
+# create_user
+# ----------------------
+
+def test_create_user_success(fw):
+    ok, message = fw.create_user("alice", "hunter2")
+    assert ok is True
+    users = fw.load_json(fw.USER_DB)
+    assert "alice" in users
+
+
+def test_create_user_duplicate_rejected(fw):
+    fw.create_user("alice", "hunter2")
+    ok, message = fw.create_user("alice", "different-password")
+    assert ok is False
+    assert "already exists" in message.lower()
+
+
+# ----------------------
+# check_login
+# ----------------------
+
+def test_check_login_admin_credentials(fw, monkeypatch):
+    monkeypatch.setattr(fw, "ADMIN_USERNAME", "admin")
+    admin_hash, admin_salt = fw.hash_password("admin-secret")
+    monkeypatch.setattr(fw, "ADMIN_PASSWORD_HASH", admin_hash)
+    monkeypatch.setattr(fw, "ADMIN_PASSWORD_SALT", admin_salt)
+
+    status, error = fw.check_login("admin", "admin-secret", "127.0.0.1", 8001)
+    assert status == "admin"
+    assert error is None
+
+
+def test_check_login_valid_user(fw):
+    # initialize_files() seeds a default "user"/"password" account and port 8001 is active
+    status, error = fw.check_login("user", "password", "127.0.0.1", 8001)
+    assert status == "valid"
+    assert error is None
+
+    sessions = fw.load_json(fw.SESSIONS_DB)
+    assert "user" in sessions
+
+
+def test_check_login_wrong_password_first_attempt_is_error(fw):
+    status, error = fw.check_login("user", "wrong-password", "127.0.0.1", 8001)
+    assert status == "error"
+
+
+def test_check_login_two_failed_attempts_triggers_honeypot(fw):
+    fw.check_login("user", "wrong-password", "127.0.0.1", 8001)
+    status, error = fw.check_login("user", "wrong-password", "127.0.0.1", 8001)
+
+    assert status == "fake"
+
+    ports = fw.load_json(fw.PORTS_DB)
+    port_8001 = next(p for p in ports if p["port"] == 8001)
+    assert port_8001["honeypot"] is True
+
+    potential_attackers = fw.load_json(fw.POTENTIAL_ATTACKERS)
+    assert any(a["username"] == "user" and a["ip"] == "127.0.0.1" for a in potential_attackers)
+
+
+def test_check_login_banned_ip_returns_fake(fw):
+    fw.ban_ip("6.6.6.6")
+    status, error = fw.check_login("user", "password", "6.6.6.6", 8001)
+    assert status == "fake"
+    assert "banned" in error.lower()
+
+
+def test_check_login_honeypot_port_returns_fake_even_with_correct_credentials(fw):
+    fw.toggle_port_status(8001, honeypot=True)
+    status, error = fw.check_login("user", "password", "127.0.0.1", 8001)
+    assert status == "fake"
+
+
+# ----------------------
+# check_inactivity
+# ----------------------
+
+def test_check_inactivity_flags_and_removes_stale_session(fw, monkeypatch):
+    monkeypatch.setattr(fw, "INACTIVITY_LIMIT", 300)
+
+    fw.check_login("user", "password", "127.0.0.1", 8001)
+    sessions = fw.load_json(fw.SESSIONS_DB)
+    sessions["user"]["last_activity_time"] -= 301  # push it just past the limit
+    fw.save_json(fw.SESSIONS_DB, sessions)
+
+    fw.check_inactivity()
+
+    sessions_after = fw.load_json(fw.SESSIONS_DB)
+    assert "user" not in sessions_after
+
+    potential_attackers = fw.load_json(fw.POTENTIAL_ATTACKERS)
+    assert any(a["username"] == "user" and "inactive" in a["reason"].lower() for a in potential_attackers)
+
+    ports = fw.load_json(fw.PORTS_DB)
+    port_8001 = next(p for p in ports if p["port"] == 8001)
+    assert port_8001["honeypot"] is True
+
+
+def test_check_inactivity_leaves_active_session_alone(fw):
+    fw.check_login("user", "password", "127.0.0.1", 8001)
+    fw.check_inactivity()
+
+    sessions_after = fw.load_json(fw.SESSIONS_DB)
+    assert "user" in sessions_after
+
+
+# ----------------------
+# IP ban management
+# ----------------------
+
+def test_ban_and_unban_ip(fw):
+    assert fw.get_banned_ips() == []
+
+    fw.ban_ip("1.2.3.4")
+    assert "1.2.3.4" in fw.get_banned_ips()
+
+    fw.unban_ip("1.2.3.4")
+    assert "1.2.3.4" not in fw.get_banned_ips()
+
+
+def test_ban_ip_is_idempotent(fw):
+    fw.ban_ip("1.2.3.4")
+    fw.ban_ip("1.2.3.4")
+    assert fw.get_banned_ips().count("1.2.3.4") == 1
+
+
+# ----------------------
+# Port management
+# ----------------------
+
+def test_toggle_port_status_updates_status_and_honeypot(fw):
+    assert fw.toggle_port_status(8004, status="active", honeypot=True) is True
+
+    ports = fw.load_json(fw.PORTS_DB)
+    port_8004 = next(p for p in ports if p["port"] == 8004)
+    assert port_8004["status"] == "active"
+    assert port_8004["honeypot"] is True
+
+
+def test_toggle_port_status_unknown_port_returns_false(fw):
+    assert fw.toggle_port_status(9999, status="active") is False
