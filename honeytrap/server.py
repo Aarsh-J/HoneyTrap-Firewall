@@ -5,15 +5,18 @@ import logging
 import socket
 import threading
 import time
-import firewall
-import tls
-from server_base import EnhancedSocketServer
-from protocol import MessageType
+
+from . import config
+from . import db
+from . import firewall
+from . import tls
+from .server_base import EnhancedSocketServer
+from .protocol import MessageType
 
 logger = logging.getLogger(__name__)
 
 class HoneyTrapServer:
-    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001, use_ssl=False):
+    def __init__(self, host=None, control_port=None, data_port=None, use_ssl=False):
         """Initialize the HoneyTrap server"""
         self.socket_server = EnhancedSocketServer(host, control_port, data_port, use_ssl=use_ssl)
         self.register_message_handlers()
@@ -237,21 +240,19 @@ def main():
             logger.info(f"Server hostname: {hostname}")
             logger.info(f"Server local IP: {local_ip}")
         except Exception as e:
-            print(f"Error getting network info: {e}")
-        
-        # Sync all ports with firewall rules for stealth
-        #try:
-        #    port_stealth.sync_all_ports()
-        #    print("[+] Port stealth feature initialized")
-        #except Exception as e:
-        #    print(f"[-] Warning: Port stealth initialization error: {e}")
-        
+            logger.error(f"Error getting network info: {e}")
+
+        # Ensure the SQLite schema exists (idempotent - safe even though
+        # firewall.py's own import already does this too).
+        db.init_db()
+
         # Generate a self-signed cert on first run (no-op if one already exists),
         # then start the server with TLS enabled on both channels.
-        # To run on multiple PCs, use host='0.0.0.0' to listen on all network interfaces
-        tls.generate_self_signed_cert()
-        server = HoneyTrapServer(host='0.0.0.0', control_port=5000, data_port=5001, use_ssl=True)
-        
+        # To run on multiple PCs, set HONEYTRAP_BIND_HOST=0.0.0.0 (the default)
+        # and point clients at this machine's IP via HONEYTRAP_SERVER_HOST.
+        tls.generate_self_signed_cert(config.CERT_PATH, config.KEY_PATH)
+        server = HoneyTrapServer(use_ssl=True)
+
         if server.start():
             logger.info("HoneyTrap Server started successfully")
             logger.info("Ready to accept connections")

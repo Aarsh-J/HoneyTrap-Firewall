@@ -11,24 +11,29 @@ import signal
 import ssl
 import sys
 
-from protocol import send_framed, recv_framed
-import tls
+from . import config
+from . import tls
+from .protocol import send_framed, recv_framed
+
+logger = logging.getLogger(__name__)
 
 class EnhancedSocketServer:
-    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001,
-                 use_ssl=False, certfile=tls.DEFAULT_CERT_PATH, keyfile=tls.DEFAULT_KEY_PATH):
+    def __init__(self, host=None, control_port=None, data_port=None,
+                 use_ssl=False, certfile=None, keyfile=None):
         """Initialize the socket server with separate control and data ports"""
-        self.host = host
-        self.control_port = control_port
-        self.data_port = data_port
+        self.host = host or config.BIND_HOST
+        self.control_port = control_port or config.CONTROL_PORT
+        self.data_port = data_port or config.DATA_PORT
 
         # Create sockets
         self.control_socket = None
         self.data_socket = None
 
         # SSL context (None means plaintext)
+        certfile = certfile or config.CERT_PATH
+        keyfile = keyfile or config.KEY_PATH
         self.ssl_context = tls.get_server_ssl_context(certfile, keyfile) if use_ssl else None
-        
+
         # Connection lists
         self.control_connections = []
         self.data_connections = []
@@ -139,11 +144,17 @@ class EnhancedSocketServer:
                     try:
                         client_socket = self.ssl_context.wrap_socket(client_socket, server_side=True)
                     except ssl.SSLError:
-                        print(f"[-] TLS handshake failed for {client_address[0]}:{client_address[1]}")
+                        logger.warning(f"TLS handshake failed for {client_address[0]}:{client_address[1]}")
                         client_socket.close()
                         continue
 
-                print(f"[+] New {channel_type} connection from {client_address[0]}:{client_address[1]}")
+                    # A bounded read timeout so a spurious select() wake-up
+                    # (e.g. TLS control-layer bytes with no application data
+                    # behind them) can't block this connection's handler
+                    # thread forever - see the note in handle_client_messages().
+                    client_socket.settimeout(2.0)
+
+                logger.info(f"New {channel_type} connection from {client_address[0]}:{client_address[1]}")
 
                 # Add to connection list
                 connection_info = {
@@ -180,14 +191,24 @@ class EnhancedSocketServer:
                 ready = select.select([client_socket], [], [], 1.0)
 
                 if ready[0]:
-                    # A TLS socket can already hold more decrypted application
-                    # data than select() will report as readable a second
-                    # time, since select() only sees bytes still sitting on
-                    # the raw fd, not what the SSL layer has already
-                    # buffered. Drain everything pending() reports before
-                    # going back to select(), or a second request arriving in
-                    # the same TLS record as the first can sit unread until
-                    # new bytes happen to arrive on the wire.
+                    # With TLS, select() reporting a socket "readable"
+                    # doesn't guarantee an application message is waiting -
+                    # TLS control-layer bytes (e.g. a post-handshake session
+                    # ticket) can make the raw fd readable even though no
+                    # decrypted application data follows. A blocking recv()
+                    # there would hang; the per-socket timeout (set in
+                    # accept_connections()) turns that into a caught
+                    # socket.timeout so we just go back to select().
+                    #
+                    # Separately, a TLS socket can already hold more
+                    # decrypted application data than select() will report
+                    # as readable a second time, since select() only sees
+                    # bytes still sitting on the raw fd, not what the SSL
+                    # layer has already buffered. Drain everything pending()
+                    # reports before going back to select(), or a second
+                    # request arriving in the same TLS record as the first
+                    # can sit unread until new bytes happen to arrive on the
+                    # wire.
                     while True:
                         try:
                             message = recv_framed(client_socket)
@@ -205,26 +226,29 @@ class EnhancedSocketServer:
                                     logger.error("Error in malformed-message handler", exc_info=True)
                             break
 
-                    if message is None:
-                        # Client disconnected
-                        self.close_connection(connection_info)
-                        break
+                        if message is None:
+                            # Client disconnected
+                            self.close_connection(connection_info)
+                            return
 
-                    # Update last activity time
-                    connection_info['last_activity'] = time.time()
+                        # Update last activity time
+                        connection_info['last_activity'] = time.time()
 
-                    # Extract command and handle it
-                    command = message.get('command')
+                        # Extract command and handle it
+                        command = message.get('command')
 
-                    if command in self.message_handlers:
-                        response = self.message_handlers[command](message, connection_info)
-                        if response:
-                            # Send response back to client
+                        if command in self.message_handlers:
+                            response = self.message_handlers[command](message, connection_info)
+                            if response:
+                                # Send response back to client
+                                self.send_message(client_socket, response)
+                        else:
+                            # Unknown command
+                            response = {'status': 'error', 'message': f"Unknown command: {command}"}
                             self.send_message(client_socket, response)
-                    else:
-                        # Unknown command
-                        response = {'status': 'error', 'message': f"Unknown command: {command}"}
-                        self.send_message(client_socket, response)
+
+                        if not (isinstance(client_socket, ssl.SSLSocket) and client_socket.pending() > 0):
+                            break
 
             except ConnectionError:
                 self.close_connection(connection_info)
