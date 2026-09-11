@@ -1,15 +1,14 @@
 # Runtime data (created on first run, holds user credentials/session state)
-users.json
-sessions.json
-ports.json
-banned_ips.json
-attackers.json
-potential_attackers.json
+data/
+
+# Log files
+logs/
 
 # Local environment/secrets (see .env.example for the template)
 .env
 
 # TLS certs/keys (self-signed, generated locally)
+certs/
 *.pem
 *.crt
 *.key
