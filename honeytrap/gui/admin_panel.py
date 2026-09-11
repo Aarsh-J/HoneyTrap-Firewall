@@ -8,7 +8,7 @@ import time
 import threading
 
 # Import socket adapter
-from adapter import AdminHandler
+from ..adapter import AdminHandler
 
 # ========================
 # Admin Panel Class

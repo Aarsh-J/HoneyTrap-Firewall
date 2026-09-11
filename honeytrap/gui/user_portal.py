@@ -10,7 +10,12 @@ import subprocess
 import socket
 
 # Import socket adapter
-from adapter import UserHandler, open_socket_fake_portal
+from ..adapter import UserHandler, open_socket_fake_portal
+
+# run_client.py lives at the repo root, two directories up from this file
+# (honeytrap/gui/user_portal.py) - used to relaunch the app on logout.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_RUN_CLIENT_PATH = os.path.join(_REPO_ROOT, "run_client.py")
 
 # ========================
 # User Portal Class
@@ -140,9 +145,6 @@ Thank you for using the HoneyTrap Firewall system!
         """Close this window and return to login page"""
         self.root.destroy()
         # Start the main application again
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        main_path = os.path.join(script_dir, "main.py")
-        
         # Check if we're running from .py file or executable
         if getattr(sys, 'frozen', False):
             # If running as executable (compiled version)
@@ -151,7 +153,7 @@ Thank you for using the HoneyTrap Firewall system!
         else:
             # If running as script
             python_executable = sys.executable
-            subprocess.Popen([python_executable, main_path])
+            subprocess.Popen([python_executable, _RUN_CLIENT_PATH])
     
     def keep_session_alive(self):
         """Periodically update activity to prevent inactivity timeout"""
@@ -313,9 +315,6 @@ class FakePortal:
         """Close this window and return to login page"""
         self.root.destroy()
         # Start the main application again
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        main_path = os.path.join(script_dir, "main.py")
-        
         # Check if we're running from .py file or executable
         if getattr(sys, 'frozen', False):
             # If running as executable (compiled version)
@@ -324,7 +323,7 @@ class FakePortal:
         else:
             # If running as script
             python_executable = sys.executable
-            subprocess.Popen([python_executable, main_path])
+            subprocess.Popen([python_executable, _RUN_CLIENT_PATH])
 
 # ----------------------
 # Launch Functions
