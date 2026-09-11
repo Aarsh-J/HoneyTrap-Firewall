@@ -19,7 +19,7 @@ DATA_PORT = 5001
 def get_client():
     """Get a singleton client instance"""
     if not hasattr(get_client, 'instance'):
-        get_client.instance = HoneyTrapClient(SERVER_HOST, CONTROL_PORT, DATA_PORT, use_ssl=False)
+        get_client.instance = HoneyTrapClient(SERVER_HOST, CONTROL_PORT, DATA_PORT, use_ssl=True)
         get_client.instance.connect()
     return get_client.instance
 

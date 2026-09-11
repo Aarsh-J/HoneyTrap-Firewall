@@ -3,22 +3,26 @@
 # ===============================
 import socket
 import json
+import ssl
 import threading
 import time
 import select
 from protocol import MessageType, send_framed, recv_framed
+import tls
 
 class HoneyTrapClient:
     """Client for connecting to the HoneyTrap server"""
-    def __init__(self, host='localhost', control_port=5000, data_port=5001):
+    def __init__(self, host='localhost', control_port=5000, data_port=5001,
+                 use_ssl=False, cert_path=tls.DEFAULT_CERT_PATH):
         self.host = host
         self.control_port = control_port
         self.data_port = data_port
-        
+
         # Connection variables
         self.control_socket = None
         self.data_socket = None
-        self.ssl_context = None
+        self.use_ssl = use_ssl
+        self.ssl_context = tls.get_client_ssl_context(cert_path) if use_ssl else None
         self.connected = False
         
         # User information
@@ -46,22 +50,31 @@ class HoneyTrapClient:
             # Connect to control channel
             self.control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.control_socket.connect((self.host, self.control_port))
-            
+
             # Connect to data channel
             self.data_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.data_socket.connect((self.host, self.data_port))
-             
+
+            # Upgrade both plain sockets to TLS if enabled. This happens
+            # after connect() because TLS wraps an already-established TCP
+            # connection - the handshake itself runs over that connection.
+            if self.ssl_context:
+                self.control_socket = self.ssl_context.wrap_socket(
+                    self.control_socket, server_hostname=self.host)
+                self.data_socket = self.ssl_context.wrap_socket(
+                    self.data_socket, server_hostname=self.host)
+
             self.connected = True
             self.active = True
-            
+
             # Start listener thread for incoming messages
             self.listener_thread = threading.Thread(target=self.listen_for_messages)
             self.listener_thread.daemon = True
             self.listener_thread.start()
-            
+
             return True
-        
-        except socket.error:
+
+        except (socket.error, ssl.SSLError):
             self.disconnect()
             return False
         

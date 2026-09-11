@@ -35,10 +35,12 @@ HoneyTrap Firewall is a sophisticated security system that employs deception-bas
 - IP banning capability
 - Inactivity monitoring
 
-### SSL Implementation
-- Secure communications
-- Self-signed certificate generation
-- Proper SSL socket wrapping
+### SSL/TLS Implementation
+- Both the control and data channels are wrapped in TLS (`ssl.SSLContext`)
+- A self-signed certificate/key pair (`server.crt` / `server.key`) is generated
+  automatically on first server startup via `tls.py` if one doesn't already exist
+- The client trusts that specific certificate file rather than a public CA chain,
+  which is appropriate for a LAN/dev deployment but not for the public internet
 
 ### Graceful Termination
 - Proper connection cleanup

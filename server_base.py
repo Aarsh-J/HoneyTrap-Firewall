@@ -7,23 +7,26 @@ import json
 import time
 import select
 import signal
+import ssl
 import sys
 
 from protocol import send_framed, recv_framed
+import tls
 
 class EnhancedSocketServer:
-    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001):
+    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001,
+                 use_ssl=False, certfile=tls.DEFAULT_CERT_PATH, keyfile=tls.DEFAULT_KEY_PATH):
         """Initialize the socket server with separate control and data ports"""
         self.host = host
         self.control_port = control_port
         self.data_port = data_port
-        
+
         # Create sockets
         self.control_socket = None
         self.data_socket = None
-        
-        # SSL contexts
-        self.ssl_context = None
+
+        # SSL context (None means plaintext)
+        self.ssl_context = tls.get_server_ssl_context(certfile, keyfile) if use_ssl else None
         
         # Connection lists
         self.control_connections = []
@@ -116,9 +119,21 @@ class EnhancedSocketServer:
                     continue
                 
                 sock.settimeout(None)
-                
+
+                # If TLS is enabled, complete the handshake before treating
+                # this as a usable connection. A bad handshake (e.g. a plain
+                # nmap probe, not a real TLS client) should just drop this
+                # one connection, not take down the accept loop.
+                if self.ssl_context:
+                    try:
+                        client_socket = self.ssl_context.wrap_socket(client_socket, server_side=True)
+                    except ssl.SSLError:
+                        print(f"[-] TLS handshake failed for {client_address[0]}:{client_address[1]}")
+                        client_socket.close()
+                        continue
+
                 print(f"[+] New {channel_type} connection from {client_address[0]}:{client_address[1]}")
-                
+
                 # Add to connection list
                 connection_info = {
                     'socket': client_socket,
