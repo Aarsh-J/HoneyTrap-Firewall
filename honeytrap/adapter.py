@@ -9,8 +9,7 @@ from .client import HoneyTrapClient
 def get_client():
     """Get a singleton client instance"""
     if not hasattr(get_client, 'instance'):
-        get_client.instance = HoneyTrapClient(
-            config.SERVER_HOST, config.CONTROL_PORT, config.DATA_PORT, use_ssl=True)
+        get_client.instance = HoneyTrapClient(SERVER_HOST, CONTROL_PORT, DATA_PORT, use_ssl=True)
         get_client.instance.connect()
     return get_client.instance
 
@@ -27,9 +26,9 @@ class LoginHandler:
             return {"status": "error", "message": "Username and password must be at least 3 characters"}
 
         # Check if these are admin credentials before applying firewall rules
-        from .firewall import ADMIN_USERNAME, ADMIN_PASSWORD_HASH, ADMIN_PASSWORD_SALT, verify_password
+        from firewall import ADMIN_USERNAME, ADMIN_PASSWORD_HASH, ADMIN_PASSWORD_SALT, verify_password
         admin_login = (username == ADMIN_USERNAME and verify_password(password, ADMIN_PASSWORD_SALT, ADMIN_PASSWORD_HASH))
-
+        
         # For admin login, ensure we use a non-honeypot port
         if admin_login and port is None:
             ports = client.get_ports()

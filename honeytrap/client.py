@@ -7,24 +7,22 @@ import ssl
 import threading
 import time
 import select
-
-from . import config
-from . import tls
-from .protocol import MessageType, send_framed, recv_framed
+from protocol import MessageType, send_framed, recv_framed
+import tls
 
 class HoneyTrapClient:
     """Client for connecting to the HoneyTrap server"""
-    def __init__(self, host=None, control_port=None, data_port=None,
-                 use_ssl=False, cert_path=None):
-        self.host = host or config.SERVER_HOST
-        self.control_port = control_port or config.CONTROL_PORT
-        self.data_port = data_port or config.DATA_PORT
+    def __init__(self, host='localhost', control_port=5000, data_port=5001,
+                 use_ssl=False, cert_path=tls.DEFAULT_CERT_PATH):
+        self.host = host
+        self.control_port = control_port
+        self.data_port = data_port
 
         # Connection variables
         self.control_socket = None
         self.data_socket = None
         self.use_ssl = use_ssl
-        self.ssl_context = tls.get_client_ssl_context(cert_path or config.CERT_PATH) if use_ssl else None
+        self.ssl_context = tls.get_client_ssl_context(cert_path) if use_ssl else None
         self.connected = False
 
         # User information
@@ -65,15 +63,6 @@ class HoneyTrapClient:
                     self.control_socket, server_hostname=self.host)
                 self.data_socket = self.ssl_context.wrap_socket(
                     self.data_socket, server_hostname=self.host)
-
-                # A bounded read timeout so a spurious select() wake-up (e.g.
-                # a TLS 1.3 post-handshake session ticket with no real
-                # application data behind it) can't block the listener
-                # thread's recv() forever - see the note in
-                # listen_for_messages(). Comfortably above any real message
-                # transfer time on a LAN.
-                self.control_socket.settimeout(2.0)
-                self.data_socket.settimeout(2.0)
 
             self.connected = True
             self.active = True
@@ -166,43 +155,22 @@ class HoneyTrapClient:
                 )
 
                 for sock in readable:
-                    channel_type = "control" if sock == self.control_socket else "data"
-
-                    # With TLS, select() reporting a socket "readable" doesn't
-                    # guarantee an application message is waiting: a TLS 1.3
-                    # server sends a post-handshake NewSessionTicket record on
-                    # every connection unprompted, which makes the raw fd
-                    # readable even though pending() shows no decrypted data.
-                    # A blocking recv() there would consume the ticket
-                    # internally and then hang waiting for real bytes that
-                    # may not come for a while. The per-socket timeout (set in
-                    # connect()) turns that hang into a caught
-                    # socket.timeout so we just loop back to select().
-                    #
-                    # Separately, a TLS socket can hold more decrypted
-                    # application data than select() will report as readable
-                    # a second time, since select() only sees bytes still on
-                    # the raw fd, not what the SSL layer already buffered -
-                    # so once a real message is read, drain anything pending()
-                    # still reports before going back to select().
-                    while True:
-                        try:
-                            message = recv_framed(sock)
-                        except (socket.timeout, json.JSONDecodeError):
-                            break
-                        except Exception:
-                            break
+                    try:
+                        message = recv_framed(sock)
 
                         if message is None:
                             # Server disconnected
                             self.disconnect()
                             return
 
+                        channel_type = "control" if sock == self.control_socket else "data"
                         self.process_message(message, channel_type)
 
-                        if not (isinstance(sock, ssl.SSLSocket) and sock.pending() > 0):
-                            break
-
+                    except json.JSONDecodeError:
+                        pass
+                    except Exception:
+                        pass
+            
             except Exception:
                 if self.active:
                     self.disconnect()
