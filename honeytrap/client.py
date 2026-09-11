@@ -409,3 +409,10 @@ class HoneyTrapClient:
         if response and response.get('status') == 'success':
             return response.get('data', [])
         return []
+
+    def get_audit_log(self):
+        """Get the admin audit trail"""
+        response = self.send_request(MessageType.GET_AUDIT_LOG, {})
+        if response and response.get('status') == 'success':
+            return response.get('data', [])
+        return []

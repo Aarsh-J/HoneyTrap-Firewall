@@ -122,6 +122,12 @@ class AdminHandler:
         return client.get_active_users()
 
     @staticmethod
+    def get_audit_log():
+        """Get the admin audit trail through socket connection"""
+        client = get_client()
+        return client.get_audit_log()
+
+    @staticmethod
     def get_ports():
         """Get ports through socket connection"""
         client = get_client()

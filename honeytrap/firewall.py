@@ -454,6 +454,28 @@ def get_active_users():
 
     return active_users
 
+# ----------------------
+# Audit log
+# ----------------------
+# A persisted, queryable history of admin actions - bans, unbans, port
+# changes, and admin logins - separate from the general log file so it can
+# be queried/displayed (e.g. in the admin panel) rather than just grepped.
+def log_audit(actor_ip, action, details=""):
+    """Record an admin action in the audit trail."""
+    with db.get_connection() as conn:
+        conn.execute(
+            "INSERT INTO audit_log (timestamp, actor_ip, action, details) VALUES (?, ?, ?, ?)",
+            (time.strftime("%Y-%m-%d %H:%M:%S"), actor_ip, action, details),
+        )
+
+def get_audit_log():
+    """Return the full audit trail, most recent first."""
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT timestamp, actor_ip, action, details FROM audit_log ORDER BY id DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
 # Initialize the database on import
 def initialize_files():
     """Create the database (if needed) and seed default ports/a test user."""

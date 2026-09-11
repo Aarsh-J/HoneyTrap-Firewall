@@ -39,6 +39,7 @@ class HoneyTrapServer:
         self.socket_server.register_handler(MessageType.UNBAN_IP, self.handle_unban_ip)
         self.socket_server.register_handler(MessageType.GET_BANNED_IPS, self.handle_get_banned_ips)
         self.socket_server.register_handler(MessageType.GET_ACTIVE_USERS, self.handle_get_active_users)
+        self.socket_server.register_handler(MessageType.GET_AUDIT_LOG, self.handle_get_audit_log)
 
         # Port management handlers
         self.socket_server.register_handler(MessageType.GET_PORTS, self.handle_get_ports)
@@ -106,6 +107,9 @@ class HoneyTrapServer:
         # Use firewall to validate login
         status, error_message = firewall.check_login(username, password, client_ip, port)
 
+        if status == "admin":
+            firewall.log_audit(client_ip, "admin_login", f"Admin '{username}' logged in")
+
         if error_message:
             return {'status': status, 'message': error_message}
         return {'status': status}
@@ -171,7 +175,9 @@ class HoneyTrapServer:
             return {'status': 'error', 'message': 'IP address required'}
 
         if firewall.ban_ip(ip_address):
-            logger.info(f"IP {ip_address} has been banned by admin from {connection_info['address'][0]}")
+            actor_ip = connection_info['address'][0]
+            logger.info(f"IP {ip_address} has been banned by admin from {actor_ip}")
+            firewall.log_audit(actor_ip, "ban_ip", f"Banned {ip_address}")
             return {'status': 'success', 'message': f'IP {ip_address} has been banned'}
         return {'status': 'error', 'message': 'Failed to ban IP'}
 
@@ -184,7 +190,9 @@ class HoneyTrapServer:
             return {'status': 'error', 'message': 'IP address required'}
 
         if firewall.unban_ip(ip_address):
-            logger.info(f"IP {ip_address} has been unbanned by admin from {connection_info['address'][0]}")
+            actor_ip = connection_info['address'][0]
+            logger.info(f"IP {ip_address} has been unbanned by admin from {actor_ip}")
+            firewall.log_audit(actor_ip, "unban_ip", f"Unbanned {ip_address}")
             return {'status': 'success', 'message': f'IP {ip_address} has been unbanned'}
         return {'status': 'error', 'message': 'Failed to unban IP'}
 
@@ -214,17 +222,26 @@ class HoneyTrapServer:
             return {'status': 'error', 'message': 'Port required'}
 
         if firewall.toggle_port_status(port, status, honeypot):
+            actor_ip = connection_info['address'][0]
+
             # If port status was changed
             if status is not None:
-                logger.info(f"Port {port} status changed to {status} by admin from {connection_info['address'][0]}")
+                logger.info(f"Port {port} status changed to {status} by admin from {actor_ip}")
+                firewall.log_audit(actor_ip, "update_port_status", f"Port {port} set to {status}")
 
             # If honeypot status was changed
             if honeypot is not None:
                 honeypot_status = "enabled" if honeypot else "disabled"
-                logger.info(f"Honeypot {honeypot_status} for port {port} by admin from {connection_info['address'][0]}")
+                logger.info(f"Honeypot {honeypot_status} for port {port} by admin from {actor_ip}")
+                firewall.log_audit(actor_ip, "toggle_honeypot", f"Honeypot {honeypot_status} for port {port}")
 
             return {'status': 'success', 'message': 'Port updated'}
         return {'status': 'error', 'message': 'Port not found'}
+
+    def handle_get_audit_log(self, message, connection_info):
+        """Handle get audit log message"""
+        audit_log = firewall.get_audit_log()
+        return {'status': 'success', 'data': audit_log}
 
 # Main function to run the server
 def main():

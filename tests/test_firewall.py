@@ -281,3 +281,29 @@ def test_login_attempts_streak_resets_after_window_expires(fw, monkeypatch):
         ).fetchone()
 
     assert row["count"] == 1  # streak restarted rather than becoming 2
+
+
+# ----------------------
+# Audit log
+# ----------------------
+
+def test_log_audit_records_an_entry(fw):
+    fw.log_audit("10.0.0.1", "ban_ip", "Banned 1.2.3.4")
+
+    entries = fw.get_audit_log()
+    assert len(entries) == 1
+    assert entries[0]["actor_ip"] == "10.0.0.1"
+    assert entries[0]["action"] == "ban_ip"
+    assert entries[0]["details"] == "Banned 1.2.3.4"
+
+
+def test_get_audit_log_orders_most_recent_first(fw):
+    fw.log_audit("10.0.0.1", "ban_ip", "first")
+    fw.log_audit("10.0.0.1", "unban_ip", "second")
+
+    entries = fw.get_audit_log()
+    assert [e["action"] for e in entries] == ["unban_ip", "ban_ip"]
+
+
+def test_get_audit_log_empty_by_default(fw):
+    assert fw.get_audit_log() == []
