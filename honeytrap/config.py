@@ -47,15 +47,10 @@ CERT_PATH = str(CERT_DIR / "server.crt")
 KEY_PATH = str(CERT_DIR / "server.key")
 
 # ----------------------
-# Storage (JSON "database" files)
+# Storage (SQLite database)
 # ----------------------
 DATA_DIR = BASE_DIR / "data"
-USER_DB = str(DATA_DIR / "users.json")
-ATTACKER_LOG = str(DATA_DIR / "attackers.json")
-POTENTIAL_ATTACKERS = str(DATA_DIR / "potential_attackers.json")
-SESSIONS_DB = str(DATA_DIR / "sessions.json")
-PORTS_DB = str(DATA_DIR / "ports.json")
-BANNED_IPS = str(DATA_DIR / "banned_ips.json")
+DB_PATH = DATA_DIR / "honeytrap.db"
 
 # ----------------------
 # Auth / firewall rules

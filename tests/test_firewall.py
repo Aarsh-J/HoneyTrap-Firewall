@@ -1,23 +1,26 @@
+import time
+
 import pytest
 
-from honeytrap import firewall
+from honeytrap import config, db, firewall
 
 
 @pytest.fixture
 def fw(tmp_path, monkeypatch):
-    """Point firewall.py's storage constants at a temp directory and reset
-    per-process state, so tests never touch the real data/ directory and
-    don't leak state between tests."""
-    monkeypatch.setattr(firewall, "USER_DB", str(tmp_path / "users.json"))
-    monkeypatch.setattr(firewall, "SESSIONS_DB", str(tmp_path / "sessions.json"))
-    monkeypatch.setattr(firewall, "PORTS_DB", str(tmp_path / "ports.json"))
-    monkeypatch.setattr(firewall, "BANNED_IPS", str(tmp_path / "banned_ips.json"))
-    monkeypatch.setattr(firewall, "POTENTIAL_ATTACKERS", str(tmp_path / "potential_attackers.json"))
-    monkeypatch.setattr(firewall, "ATTACKER_LOG", str(tmp_path / "attackers.json"))
-    monkeypatch.setattr(firewall, "LOGIN_ATTEMPTS", {})
-
+    """Point the SQLite database at a temp file and reseed it, so tests
+    never touch the real data/ directory and don't leak state between
+    tests."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
     firewall.initialize_files()
     return firewall
+
+
+def _set_session_last_activity(username, value):
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE sessions SET last_activity_time = ? WHERE username = ?",
+            (value, username),
+        )
 
 
 # ----------------------
@@ -48,8 +51,9 @@ def test_hash_password_uses_random_salt_by_default(fw):
 def test_create_user_success(fw):
     ok, message = fw.create_user("alice", "hunter2")
     assert ok is True
-    users = fw.load_json(fw.USER_DB)
-    assert "alice" in users
+
+    status, _ = fw.check_login("alice", "hunter2", "127.0.0.1", 8001)
+    assert status == "valid"
 
 
 def test_create_user_duplicate_rejected(fw):
@@ -80,8 +84,8 @@ def test_check_login_valid_user(fw):
     assert status == "valid"
     assert error is None
 
-    sessions = fw.load_json(fw.SESSIONS_DB)
-    assert "user" in sessions
+    active = fw.get_active_users()
+    assert any(u["username"] == "user" for u in active)
 
 
 def test_check_login_wrong_password_first_attempt_is_error(fw):
@@ -95,11 +99,11 @@ def test_check_login_two_failed_attempts_triggers_honeypot(fw):
 
     assert status == "fake"
 
-    ports = fw.load_json(fw.PORTS_DB)
+    ports = fw.get_ports()
     port_8001 = next(p for p in ports if p["port"] == 8001)
     assert port_8001["honeypot"] is True
 
-    potential_attackers = fw.load_json(fw.POTENTIAL_ATTACKERS)
+    potential_attackers = fw.get_potential_attackers()
     assert any(a["username"] == "user" and a["ip"] == "127.0.0.1" for a in potential_attackers)
 
 
@@ -124,19 +128,17 @@ def test_check_inactivity_flags_and_removes_stale_session(fw, monkeypatch):
     monkeypatch.setattr(fw, "INACTIVITY_LIMIT", 300)
 
     fw.check_login("user", "password", "127.0.0.1", 8001)
-    sessions = fw.load_json(fw.SESSIONS_DB)
-    sessions["user"]["last_activity_time"] -= 301  # push it just past the limit
-    fw.save_json(fw.SESSIONS_DB, sessions)
+    _set_session_last_activity("user", time.time() - 301)  # push it just past the limit
 
     fw.check_inactivity()
 
-    sessions_after = fw.load_json(fw.SESSIONS_DB)
-    assert "user" not in sessions_after
+    active_after = fw.get_active_users()
+    assert not any(u["username"] == "user" for u in active_after)
 
-    potential_attackers = fw.load_json(fw.POTENTIAL_ATTACKERS)
+    potential_attackers = fw.get_potential_attackers()
     assert any(a["username"] == "user" and "inactive" in a["reason"].lower() for a in potential_attackers)
 
-    ports = fw.load_json(fw.PORTS_DB)
+    ports = fw.get_ports()
     port_8001 = next(p for p in ports if p["port"] == 8001)
     assert port_8001["honeypot"] is True
 
@@ -145,8 +147,8 @@ def test_check_inactivity_leaves_active_session_alone(fw):
     fw.check_login("user", "password", "127.0.0.1", 8001)
     fw.check_inactivity()
 
-    sessions_after = fw.load_json(fw.SESSIONS_DB)
-    assert "user" in sessions_after
+    active_after = fw.get_active_users()
+    assert any(u["username"] == "user" for u in active_after)
 
 
 # ----------------------
@@ -176,7 +178,7 @@ def test_ban_ip_is_idempotent(fw):
 def test_toggle_port_status_updates_status_and_honeypot(fw):
     assert fw.toggle_port_status(8004, status="active", honeypot=True) is True
 
-    ports = fw.load_json(fw.PORTS_DB)
+    ports = fw.get_ports()
     port_8004 = next(p for p in ports if p["port"] == 8004)
     assert port_8004["status"] == "active"
     assert port_8004["honeypot"] is True

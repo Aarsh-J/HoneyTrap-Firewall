@@ -3,28 +3,23 @@
 # ===========================================
 import hashlib
 import hmac
-import json
 import logging
 import secrets
 import time
 
 from . import config
+from . import db
 
 logger = logging.getLogger(__name__)
 
-# ----------------------
-#  JSON Utility Functions
-# ----------------------
-def load_json(file):
-    try:
-        with open(file, "r") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {} if "users" in file or "sessions" in file else []
 
-def save_json(file, data):
-    with open(file, "w") as f:
-        json.dump(data, f, indent=4)
+def _coerce_port(port):
+    """Ports arrive as either int or str depending on the caller; normalize
+    to int so SQLite comparisons against the INTEGER `port` column are exact."""
+    try:
+        return int(port)
+    except (TypeError, ValueError):
+        return port
 
 # ----------------------
 # Password Hashing
@@ -52,37 +47,27 @@ def verify_password(password, salt_hex, hash_hex):
 # ----------------------
 # Constants
 # ----------------------
-USER_DB = config.USER_DB
-ATTACKER_LOG = config.ATTACKER_LOG
-POTENTIAL_ATTACKERS = config.POTENTIAL_ATTACKERS
-SESSIONS_DB = config.SESSIONS_DB
-PORTS_DB = config.PORTS_DB
-BANNED_IPS = config.BANNED_IPS
-
 # Admin credentials come from config (which reads them from the environment),
 # so the real password never lives in source control.
 ADMIN_USERNAME = config.ADMIN_USERNAME
 ADMIN_PASSWORD_HASH, ADMIN_PASSWORD_SALT = hash_password(config.ADMIN_PASSWORD_RAW)
 INACTIVITY_LIMIT = config.INACTIVITY_LIMIT
 
-# Track login attempts
-LOGIN_ATTEMPTS = {}
-
 # ----------------------
 # Firewall Rules
 # ----------------------
 def create_user(username, password):
     """Create a new user if username doesn't exist"""
-    users = load_json(USER_DB)
+    with db.get_connection() as conn:
+        existing = conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone()
+        if existing:
+            return False, "Username already exists"
 
-    # Check if username already exists
-    if username in users:
-        return False, "Username already exists"
-
-    # Create new user with a hashed, salted password
-    password_hash, salt = hash_password(password)
-    users[username] = {"hash": password_hash, "salt": salt}
-    save_json(USER_DB, users)
+        password_hash, salt = hash_password(password)
+        conn.execute(
+            "INSERT INTO users (username, hash, salt) VALUES (?, ?, ?)",
+            (username, password_hash, salt),
+        )
     return True, "User created successfully"
 
 def check_login(username, password, ip_address, port):
@@ -94,234 +79,244 @@ def check_login(username, password, ip_address, port):
         - "fake" if user should be directed to fake page
         - "error" if login failed
     """
-    users = load_json(USER_DB)
-    banned_ips = load_json(BANNED_IPS)
-    ports = load_json(PORTS_DB)
-    potential_attackers = load_json(POTENTIAL_ATTACKERS)
+    port = _coerce_port(port)
 
     # Admin login check - must be first to bypass all other checks
     if username == ADMIN_USERNAME and verify_password(password, ADMIN_PASSWORD_SALT, ADMIN_PASSWORD_HASH):
         return "admin", None
 
-    # Check if IP is banned
-    if ip_address in banned_ips:
-        return "fake", "IP address banned"
+    with db.get_connection() as conn:
+        # Check if IP is banned
+        banned = conn.execute("SELECT 1 FROM banned_ips WHERE ip = ?", (ip_address,)).fetchone()
+        if banned:
+            return "fake", "IP address banned"
 
-    # Basic validation
-    if len(username) < 3 or len(password) < 3:
-        return "error", "Invalid username/password length"
+        # Basic validation
+        if len(username) < 3 or len(password) < 3:
+            return "error", "Invalid username/password length"
 
-    # Check if the port has honeypot enabled
-    port_honeypot_enabled = False
-    for p in ports:
-        if str(p["port"]) == str(port) and p["status"] == "active":
-            port_honeypot_enabled = p.get("honeypot", False)
-            break
+        # Check if the port has honeypot enabled
+        port_row = conn.execute(
+            "SELECT honeypot FROM ports WHERE port = ? AND status = 'active'", (port,)
+        ).fetchone()
+        port_honeypot_enabled = bool(port_row["honeypot"]) if port_row else False
 
-    # If honeypot is active, always send to fake page
-    if port_honeypot_enabled:
-        return "fake", None
+        # If honeypot is active, always send to fake page
+        if port_honeypot_enabled:
+            return "fake", None
 
-    # Regular user login
-    if username in users and verify_password(password, users[username]["salt"], users[username]["hash"]):
-        # Reset login attempts for this user+IP if successful
+        # Regular user login
+        user_row = conn.execute(
+            "SELECT hash, salt FROM users WHERE username = ?", (username,)
+        ).fetchone()
+
+        if user_row and verify_password(password, user_row["salt"], user_row["hash"]):
+            # Reset login attempts for this user+IP if successful
+            key = f"{username}:{ip_address}"
+            conn.execute("DELETE FROM login_attempts WHERE key = ?", (key,))
+
+            now = time.time()
+            conn.execute(
+                "INSERT INTO sessions (username, login_time, last_activity_time, ip, port) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(username) DO UPDATE SET "
+                "login_time = excluded.login_time, "
+                "last_activity_time = excluded.last_activity_time, "
+                "ip = excluded.ip, port = excluded.port",
+                (username, now, now, ip_address, port),
+            )
+            return "valid", None
+
+        # Failed attempt handling
         key = f"{username}:{ip_address}"
-        if key in LOGIN_ATTEMPTS:
-            del LOGIN_ATTEMPTS[key]
+        row = conn.execute("SELECT count FROM login_attempts WHERE key = ?", (key,)).fetchone()
+        count = (row["count"] if row else 0) + 1
+        now = time.time()
 
-        sessions = load_json(SESSIONS_DB)
-        sessions[username] = {
-            "login_time": time.time(),
-            "last_activity_time": time.time(),
-            "ip": ip_address,
-            "port": port
-        }
-        save_json(SESSIONS_DB, sessions)
-        return "valid", None
+        if row:
+            conn.execute(
+                "UPDATE login_attempts SET count = ?, last_attempt_at = ? WHERE key = ?",
+                (count, now, key),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO login_attempts (key, count, first_attempt_at, last_attempt_at) "
+                "VALUES (?, ?, ?, ?)",
+                (key, count, now, now),
+            )
 
-    # Failed attempt handling
-    key = f"{username}:{ip_address}"
-    LOGIN_ATTEMPTS[key] = LOGIN_ATTEMPTS.get(key, 0) + 1
+        # Check number of failed attempts - Allow 2 incorrect attempts
+        if count >= 2:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "INSERT INTO potential_attackers "
+                "(username, ip, attempted_port, attempts, reason, timestamp) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(username, ip) DO UPDATE SET "
+                "attempted_port = excluded.attempted_port, "
+                "attempts = excluded.attempts, "
+                "reason = excluded.reason, "
+                "timestamp = excluded.timestamp",
+                (username, ip_address, port, count, "2 or more failed login attempts", timestamp),
+            )
 
-    # Check number of failed attempts - Allow 2 incorrect attempts
-    if LOGIN_ATTEMPTS[key] >= 2:
-        # Two or more failed attempts - flag as a potential attacker
-        potential_attacker_entry = {
-            "username": username,
-            "ip": ip_address,
-            "attempted_port": port,
-            "attempts": LOGIN_ATTEMPTS[key],
-            "reason": "2 or more failed login attempts",
-            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
+            # Enable honeypot on this port
+            conn.execute(
+                "UPDATE ports SET honeypot = 1, last_triggered = ? WHERE port = ?",
+                (timestamp, port),
+            )
 
-        # Check if this IP+username already exists in potential_attackers
-        existing = False
-        for i, entry in enumerate(potential_attackers):
-            if entry["username"] == username and entry["ip"] == ip_address:
-                potential_attackers[i] = potential_attacker_entry
-                existing = True
-                break
+            return "fake", None
 
-        if not existing:
-            potential_attackers.append(potential_attacker_entry)
-
-        save_json(POTENTIAL_ATTACKERS, potential_attackers)
-
-        # Enable honeypot on this port
-        for p in ports:
-            if str(p["port"]) == str(port):
-                p["honeypot"] = True
-                p["last_triggered"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                break
-        save_json(PORTS_DB, ports)
-
-        return "fake", None
-
-    return "error", "Incorrect username/password"
+        return "error", "Incorrect username/password"
 
 def logout_user(username):
     """Remove a user's session when they log out properly"""
-    sessions = load_json(SESSIONS_DB)
-    if username in sessions:
-        # Remove the session entry
-        del sessions[username]
-        save_json(SESSIONS_DB, sessions)
-        return True
-    return False
+    with db.get_connection() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE username = ?", (username,))
+        return cur.rowcount > 0
 
 def check_inactivity():
     """Check for inactive users and flag them as potential attackers if inactive beyond limit"""
-    sessions = load_json(SESSIONS_DB)
-    potential_attackers = load_json(POTENTIAL_ATTACKERS)
     current_time = time.time()
 
-    for username, session in list(sessions.items()):
-        if username == ADMIN_USERNAME:
-            continue
+    with db.get_connection() as conn:
+        sessions = conn.execute("SELECT * FROM sessions").fetchall()
 
-        port = session.get("port", "unknown")
-        inactive_time = current_time - session["last_activity_time"]
+        for session in sessions:
+            username = session["username"]
+            if username == ADMIN_USERNAME:
+                continue
 
-        # Only mark as potential attackers if they've been inactive beyond limit
-        if inactive_time > INACTIVITY_LIMIT:
-            # Add to potential attackers
-            potential_attacker_entry = {
-                "username": username,
-                "ip": session["ip"],
-                "attempted_port": port,
-                "reason": "Inactive for 5+ minutes",
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
-            }
+            port = session["port"] if session["port"] is not None else "unknown"
+            inactive_time = current_time - session["last_activity_time"]
 
-            # Check if already in potential attackers
-            existing = False
-            for i, entry in enumerate(potential_attackers):
-                if entry["username"] == username and entry["ip"] == session["ip"]:
-                    potential_attackers[i] = potential_attacker_entry
-                    existing = True
-                    break
+            # Only mark as potential attackers if they've been inactive beyond limit
+            if inactive_time > INACTIVITY_LIMIT:
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
 
-            if not existing:
-                potential_attackers.append(potential_attacker_entry)
+                conn.execute(
+                    "INSERT INTO potential_attackers "
+                    "(username, ip, attempted_port, attempts, reason, timestamp) "
+                    "VALUES (?, ?, ?, NULL, ?, ?) "
+                    "ON CONFLICT(username, ip) DO UPDATE SET "
+                    "attempted_port = excluded.attempted_port, "
+                    "attempts = excluded.attempts, "
+                    "reason = excluded.reason, "
+                    "timestamp = excluded.timestamp",
+                    (username, session["ip"], port, "Inactive for 5+ minutes", timestamp),
+                )
 
-            save_json(POTENTIAL_ATTACKERS, potential_attackers)
+                # Enable honeypot for this session's port
+                conn.execute(
+                    "UPDATE ports SET honeypot = 1, last_triggered = ? WHERE port = ?",
+                    (timestamp, port),
+                )
 
-            # Enable honeypot for this session's port
-            ports = load_json(PORTS_DB)
-            for p in ports:
-                if str(p["port"]) == str(port):
-                    p["honeypot"] = True
-                    p["last_triggered"] = time.strftime("%Y-%m-%d %H:%M:%S")
-                    break
-            save_json(PORTS_DB, ports)
-
-            # Remove the session
-            del sessions[username]
-            save_json(SESSIONS_DB, sessions)
-
-    save_json(SESSIONS_DB, sessions)
+                # Remove the session
+                conn.execute("DELETE FROM sessions WHERE username = ?", (username,))
 
 def update_activity(username):
     """Update user activity timestamp"""
-    sessions = load_json(SESSIONS_DB)
-    if username in sessions:
-        sessions[username]["last_activity_time"] = time.time()
-        save_json(SESSIONS_DB, sessions)
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE sessions SET last_activity_time = ? WHERE username = ?",
+            (time.time(), username),
+        )
     return True
 
 def get_port_status(port):
     """Check if port is active and if honeypot is enabled"""
-    ports = load_json(PORTS_DB)
-    for p in ports:
-        if str(p["port"]) == str(port):
-            return {
-                "active": p["status"] == "active",
-                "honeypot": p.get("honeypot", False)
-            }
+    port = _coerce_port(port)
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT status, honeypot FROM ports WHERE port = ?", (port,)).fetchone()
+    if row:
+        return {"active": row["status"] == "active", "honeypot": bool(row["honeypot"])}
     return {"active": False, "honeypot": False}
 
 def toggle_port_status(port, status=None, honeypot=None):
     """Update port status or honeypot setting"""
-    ports = load_json(PORTS_DB)
-    for p in ports:
-        if str(p["port"]) == str(port):
-            if status is not None:
-                p["status"] = status
-            if honeypot is not None:
-                p["honeypot"] = honeypot
-            save_json(PORTS_DB, ports)
-            return True
-    return False
+    port = _coerce_port(port)
+    with db.get_connection() as conn:
+        row = conn.execute("SELECT 1 FROM ports WHERE port = ?", (port,)).fetchone()
+        if not row:
+            return False
+
+        if status is not None:
+            conn.execute("UPDATE ports SET status = ? WHERE port = ?", (status, port))
+        if honeypot is not None:
+            conn.execute(
+                "UPDATE ports SET honeypot = ? WHERE port = ?",
+                (1 if honeypot else 0, port),
+            )
+    return True
 
 def get_attackers():
     """Return the list of attackers"""
-    return load_json(ATTACKER_LOG)
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT username, ip, attempted_port, reason, timestamp FROM attackers ORDER BY id"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 def get_ports():
     """Return the list of ports"""
-    return load_json(PORTS_DB)
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT port, status, honeypot, last_triggered FROM ports ORDER BY port"
+        ).fetchall()
+    return [
+        {
+            "port": row["port"],
+            "status": row["status"],
+            "honeypot": bool(row["honeypot"]),
+            "last_triggered": row["last_triggered"],
+        }
+        for row in rows
+    ]
 
 def get_potential_attackers():
     """Return the list of potential attackers"""
-    return load_json(POTENTIAL_ATTACKERS)
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            "SELECT username, ip, attempted_port, attempts, reason, timestamp "
+            "FROM potential_attackers ORDER BY id"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 def ban_ip(ip_address):
     """Add an IP to the banned list"""
-    banned_ips = load_json(BANNED_IPS)
-    if ip_address not in banned_ips:
-        banned_ips.append(ip_address)
-        save_json(BANNED_IPS, banned_ips)
+    with db.get_connection() as conn:
+        conn.execute("INSERT OR IGNORE INTO banned_ips (ip) VALUES (?)", (ip_address,))
     return True
 
 def unban_ip(ip_address):
     """Remove an IP from the banned list"""
-    banned_ips = load_json(BANNED_IPS)
-    if ip_address in banned_ips:
-        banned_ips.remove(ip_address)
-        save_json(BANNED_IPS, banned_ips)
+    with db.get_connection() as conn:
+        conn.execute("DELETE FROM banned_ips WHERE ip = ?", (ip_address,))
     return True
 
 def get_banned_ips():
     """Get the list of banned IPs"""
-    return load_json(BANNED_IPS)
+    with db.get_connection() as conn:
+        rows = conn.execute("SELECT ip FROM banned_ips ORDER BY ip").fetchall()
+    return [row["ip"] for row in rows]
 
 def get_active_users():
     """Get the list of currently active users with their session details"""
-    sessions = load_json(SESSIONS_DB)
-    active_users = []
-
     current_time = time.time()
-    for username, session in sessions.items():
-        # Calculate how long they've been active and inactive
+    with db.get_connection() as conn:
+        sessions = conn.execute("SELECT * FROM sessions").fetchall()
+
+    active_users = []
+    for session in sessions:
         session_length = current_time - session["login_time"]
         last_activity = current_time - session["last_activity_time"]
 
-        # Add formatted details
         active_users.append({
-            "username": username,
+            "username": session["username"],
             "ip": session["ip"],
-            "port": session.get("port", "unknown"),
+            "port": session["port"] if session["port"] is not None else "unknown",
             "login_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(session["login_time"])),
             "last_activity": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(session["last_activity_time"])),
             "session_length": f"{int(session_length / 60)} mins",
@@ -330,45 +325,37 @@ def get_active_users():
 
     return active_users
 
-# Initialize JSON files on import
+# Initialize the database on import
 def initialize_files():
-    """Initialize necessary JSON files with default values if they don't exist"""
+    """Create the database (if needed) and seed default ports/a test user."""
     try:
-        # Initialize ports
-        ports = load_json(PORTS_DB)
-        if not ports:
-            # Create default ports
-            default_ports = [
-                {"port": 8001, "status": "active", "honeypot": False, "last_triggered": "Never"},
-                {"port": 8002, "status": "active", "honeypot": False, "last_triggered": "Never"},
-                {"port": 8003, "status": "active", "honeypot": False, "last_triggered": "Never"},
-                {"port": 8004, "status": "inactive", "honeypot": False, "last_triggered": "Never"},
-                {"port": 8005, "status": "inactive", "honeypot": False, "last_triggered": "Never"}
-            ]
-            save_json(PORTS_DB, default_ports)
+        db.init_db()
+        with db.get_connection() as conn:
+            port_count = conn.execute("SELECT COUNT(*) AS c FROM ports").fetchone()["c"]
+            if port_count == 0:
+                default_ports = [
+                    (8001, "active", 0, "Never"),
+                    (8002, "active", 0, "Never"),
+                    (8003, "active", 0, "Never"),
+                    (8004, "inactive", 0, "Never"),
+                    (8005, "inactive", 0, "Never"),
+                ]
+                conn.executemany(
+                    "INSERT INTO ports (port, status, honeypot, last_triggered) VALUES (?, ?, ?, ?)",
+                    default_ports,
+                )
 
-        # Initialize other JSON files if they don't exist
-        potential_attackers = load_json(POTENTIAL_ATTACKERS)
-        save_json(POTENTIAL_ATTACKERS, potential_attackers)
-
-        banned_ips = load_json(BANNED_IPS)
-        save_json(BANNED_IPS, banned_ips)
-
-        sessions = load_json(SESSIONS_DB)
-        save_json(SESSIONS_DB, sessions)
-
-        attackers = load_json(ATTACKER_LOG)
-        save_json(ATTACKER_LOG, attackers)
-
-        users = load_json(USER_DB)
-        if not users:
-            # Create a default test user if none exist
-            password_hash, salt = hash_password("password")
-            users = {"user": {"hash": password_hash, "salt": salt}}
-            save_json(USER_DB, users)
+            user_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+            if user_count == 0:
+                # Create a default test user if none exist
+                password_hash, salt = hash_password("password")
+                conn.execute(
+                    "INSERT INTO users (username, hash, salt) VALUES (?, ?, ?)",
+                    ("user", password_hash, salt),
+                )
 
     except Exception as e:
-        logger.error(f"Error initializing files: {e}")
+        logger.error(f"Error initializing database: {e}")
 
 # Initialize on import
 initialize_files()

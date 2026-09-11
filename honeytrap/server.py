@@ -7,6 +7,7 @@ import threading
 import time
 
 from . import config
+from . import db
 from . import firewall
 from . import tls
 from .server_base import EnhancedSocketServer
@@ -229,6 +230,10 @@ def main():
             logger.info(f"Server local IP: {local_ip}")
         except Exception as e:
             logger.error(f"Error getting network info: {e}")
+
+        # Ensure the SQLite schema exists (idempotent - safe even though
+        # firewall.py's own import already does this too).
+        db.init_db()
 
         # Generate a self-signed cert on first run (no-op if one already exists),
         # then start the server with TLS enabled on both channels.
