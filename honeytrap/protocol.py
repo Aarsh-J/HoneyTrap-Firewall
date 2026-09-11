@@ -25,7 +25,8 @@ class MessageType:
     UNBAN_IP = "unban_ip"
     GET_BANNED_IPS = "get_banned_ips"
     GET_ACTIVE_USERS = "get_active_users"
-    
+    GET_AUDIT_LOG = "get_audit_log"
+
     # Port management
     GET_PORTS = "get_ports"
     UPDATE_PORT = "update_port"

@@ -57,12 +57,17 @@ class AdminPanel(tk.Frame):
         # Tab 4: System Status
         self.status_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.status_tab, text="System Status")
-        
+
+        # Tab 5: Audit Log
+        self.audit_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.audit_tab, text="Audit Log")
+
         # Set up each tab's content
         self.setup_attackers_tab()
         self.setup_users_tab()
         self.setup_ports_tab()
         self.setup_status_tab()
+        self.setup_audit_tab()
         
         # Add logout button at the bottom
         tk.Button(self, text="Logout", command=self.logout).pack(pady=10)
@@ -289,6 +294,34 @@ class AdminPanel(tk.Frame):
         # Refresh button
         tk.Button(self.status_tab, text="Refresh Status", command=self.update_system_status).pack(pady=20)
 
+    def setup_audit_tab(self):
+        """Setup the audit log tab - a history of admin actions"""
+        tk.Label(self.audit_tab, text="Admin Audit Log", font=("Arial", 16)).pack(pady=10)
+
+        columns = ("timestamp", "actor_ip", "action", "details")
+        self.audit_table = ttk.Treeview(self.audit_tab, columns=columns, show="headings")
+
+        for col in columns:
+            self.audit_table.heading(col, text=col.replace("_", " ").capitalize())
+
+        self.audit_table.column("timestamp", width=150, anchor="center")
+        self.audit_table.column("actor_ip", width=120, anchor="center")
+        self.audit_table.column("action", width=150, anchor="center")
+        self.audit_table.column("details", width=300, anchor="w")
+
+        self.audit_table.pack(fill="both", expand=True, padx=5, pady=5)
+
+        scrollbar = ttk.Scrollbar(self.audit_tab, orient="vertical", command=self.audit_table.yview)
+        scrollbar.pack(side="right", fill="y")
+        self.audit_table.configure(yscrollcommand=scrollbar.set)
+
+        button_frame = tk.Frame(self.audit_tab)
+        button_frame.pack(pady=10)
+        tk.Button(button_frame, text="Refresh", command=self.view_audit_log).pack(side="left", padx=5)
+
+        # Load initial data
+        self.view_audit_log()
+
     # ----------------------
     # Auto-refresh Functionality
     # ----------------------
@@ -307,6 +340,7 @@ class AdminPanel(tk.Frame):
                 self.master.after(0, self.update_system_status)
                 self.master.after(0, self.view_banned_ips)
                 self.master.after(0, self.view_active_users)
+                self.master.after(0, self.view_audit_log)
             except Exception:
                 pass
             
@@ -603,6 +637,27 @@ class AdminPanel(tk.Frame):
             
         except Exception:
             self.server_status.set("Error")
+
+    # ----------------------
+    # Audit Log
+    # ----------------------
+    def view_audit_log(self):
+        try:
+            audit_entries = AdminHandler.get_audit_log()
+        except Exception:
+            messagebox.showerror("Error", "Failed to fetch audit log")
+            return
+
+        for item in self.audit_table.get_children():
+            self.audit_table.delete(item)
+
+        for entry in audit_entries:
+            self.audit_table.insert("", "end", values=(
+                entry.get("timestamp", "N/A"),
+                entry.get("actor_ip", "N/A"),
+                entry.get("action", "N/A"),
+                entry.get("details", ""),
+            ))
 
     # ----------------------
     # Logout Functionality

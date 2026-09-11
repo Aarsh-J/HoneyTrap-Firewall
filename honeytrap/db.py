@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS port_touches (
     touched_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_port_touches_ip_time ON port_touches(ip, touched_at);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    actor_ip TEXT NOT NULL,
+    action TEXT NOT NULL,
+    details TEXT
+);
 """
 
 
