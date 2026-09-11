@@ -41,6 +41,17 @@ class HoneyTrapServer:
         self.socket_server.register_handler(MessageType.GET_PORTS, self.handle_get_ports)
         self.socket_server.register_handler(MessageType.UPDATE_PORT, self.handle_update_port)
 
+        # A malformed/non-JSON message is itself a suspicious signal - a
+        # real client/GUI following the protocol would never send one.
+        self.socket_server.register_malformed_message_handler(self.handle_malformed_message)
+
+    def handle_malformed_message(self, connection_info):
+        """Score a client that sent a non-JSON / unparseable message"""
+        ip_address = connection_info['address'][0]
+        _, triggered = firewall.record_suspicious_event(ip_address, "malformed_message")
+        if triggered:
+            logger.warning(f"Risk score threshold crossed for {ip_address} after a malformed message")
+
     def start(self):
         """Start the socket server and inactivity checker"""
         if self.socket_server.start():

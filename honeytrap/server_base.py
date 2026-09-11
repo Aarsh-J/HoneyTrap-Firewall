@@ -36,6 +36,11 @@ class EnhancedSocketServer:
         # Message handlers
         self.message_handlers = {}
 
+        # Optional hook for a malformed (non-JSON) message from a client -
+        # kept as a callback rather than a direct firewall.py import so this
+        # transport class stays application-agnostic.
+        self.on_malformed_message = None
+
         # Active status (for graceful termination)
         self.active = False
 
@@ -70,6 +75,11 @@ class EnhancedSocketServer:
     def register_handler(self, command, handler_function):
         """Register a function to handle a specific command"""
         self.message_handlers[command] = handler_function
+
+    def register_malformed_message_handler(self, handler_function):
+        """Register a function called with connection_info whenever a
+        client sends a non-JSON / unparseable message."""
+        self.on_malformed_message = handler_function
 
     def start(self):
         """Start the server with retry mechanism"""
@@ -170,13 +180,30 @@ class EnhancedSocketServer:
                 ready = select.select([client_socket], [], [], 1.0)
 
                 if ready[0]:
-                    # Socket has data to read
-                    try:
-                        message = recv_framed(client_socket)
-                    except json.JSONDecodeError:
-                        response = {'status': 'error', 'message': "Invalid request format"}
-                        self.send_message(client_socket, response)
-                        continue
+                    # A TLS socket can already hold more decrypted application
+                    # data than select() will report as readable a second
+                    # time, since select() only sees bytes still sitting on
+                    # the raw fd, not what the SSL layer has already
+                    # buffered. Drain everything pending() reports before
+                    # going back to select(), or a second request arriving in
+                    # the same TLS record as the first can sit unread until
+                    # new bytes happen to arrive on the wire.
+                    while True:
+                        try:
+                            message = recv_framed(client_socket)
+                        except socket.timeout:
+                            # Spurious wake-up (see note above) with no real
+                            # message behind it - just go back to select().
+                            break
+                        except json.JSONDecodeError:
+                            response = {'status': 'error', 'message': "Invalid request format"}
+                            self.send_message(client_socket, response)
+                            if self.on_malformed_message:
+                                try:
+                                    self.on_malformed_message(connection_info)
+                                except Exception:
+                                    logger.error("Error in malformed-message handler", exc_info=True)
+                            break
 
                     if message is None:
                         # Client disconnected

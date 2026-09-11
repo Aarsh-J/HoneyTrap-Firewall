@@ -61,6 +61,32 @@ HASH_ITERATIONS = 100_000
 INACTIVITY_LIMIT = 300  # 5 minutes
 
 # ----------------------
+# Honeypot trigger scoring
+# ----------------------
+# Different suspicious signals add points to a per-IP risk score; crossing
+# the threshold triggers the honeypot. Defaults keep today's "2 failed
+# logins" behavior (2 x FAILED_LOGIN_POINTS == HONEYPOT_TRIGGER_THRESHOLD)
+# while allowing other signals to combine toward the same threshold.
+FAILED_LOGIN_POINTS = int(os.environ.get("HONEYTRAP_FAILED_LOGIN_POINTS", 3))
+MALFORMED_MESSAGE_POINTS = int(os.environ.get("HONEYTRAP_MALFORMED_MESSAGE_POINTS", 5))
+PORT_SCAN_POINTS = int(os.environ.get("HONEYTRAP_PORT_SCAN_POINTS", 10))
+HONEYPOT_TRIGGER_THRESHOLD = int(os.environ.get("HONEYTRAP_TRIGGER_THRESHOLD", 6))
+
+# A sliding window (not "all-time") for counting repeated failed logins.
+LOGIN_ATTEMPT_WINDOW_SECONDS = int(os.environ.get("HONEYTRAP_LOGIN_ATTEMPT_WINDOW_SECONDS", 60))
+
+# The risk score itself is also windowed (a sum of recent events, not an
+# ever-growing counter) - otherwise one stale event from long ago would
+# count against an IP forever. Generous enough to comfortably span the
+# login-attempt and port-scan windows above.
+RISK_SCORE_WINDOW_SECONDS = int(os.environ.get("HONEYTRAP_RISK_SCORE_WINDOW_SECONDS", 120))
+
+# Port-scan detection: an IP touching this many distinct (virtual/simulated)
+# ports within this window during login attempts looks like scanning.
+PORT_SCAN_WINDOW_SECONDS = int(os.environ.get("HONEYTRAP_PORT_SCAN_WINDOW_SECONDS", 30))
+PORT_SCAN_DISTINCT_PORTS = int(os.environ.get("HONEYTRAP_PORT_SCAN_DISTINCT_PORTS", 3))
+
+# ----------------------
 # Logging
 # ----------------------
 LOG_DIR = BASE_DIR / "logs"

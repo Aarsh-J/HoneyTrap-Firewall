@@ -22,6 +22,110 @@ def _coerce_port(port):
         return port
 
 # ----------------------
+# Risk scoring
+# ----------------------
+# Different suspicious signals (repeated failed logins, malformed protocol
+# messages, touching many ports quickly) all add points to a single per-IP
+# score, instead of each having its own hardcoded threshold. The score is
+# itself a *sum over a sliding window* (RISK_SCORE_WINDOW_SECONDS) rather
+# than an ever-growing counter - each event is stored with its own
+# timestamp, so one stale event from long ago can't keep counting against
+# an IP forever. Crossing HONEYPOT_TRIGGER_THRESHOLD is what actually flags
+# a honeypot - see check_login() for how a crossing gets tied to a port.
+_EVENT_POINTS = {
+    "failed_login": lambda: config.FAILED_LOGIN_POINTS,
+    "malformed_message": lambda: config.MALFORMED_MESSAGE_POINTS,
+    "port_scan": lambda: config.PORT_SCAN_POINTS,
+}
+
+def record_suspicious_event(ip_address, event_type, conn=None):
+    """Record a suspicious event and add its points to the IP's windowed score.
+
+    Pass an existing `conn` when calling from inside a function that already
+    holds an open db.get_connection() - SQLite only allows one writer at a
+    time, so nesting a second, separate connection while the first is still
+    uncommitted would deadlock. Standalone callers (outside any existing
+    transaction) can omit it.
+
+    Returns (new_score, triggered) where triggered is True only on the exact
+    call that pushes the windowed score from below HONEYPOT_TRIGGER_THRESHOLD
+    to at or above it.
+    """
+    points = _EVENT_POINTS.get(event_type, lambda: 0)()
+    now = time.time()
+    window_start = now - config.RISK_SCORE_WINDOW_SECONDS
+
+    def _apply(c):
+        previous_score = c.execute(
+            "SELECT COALESCE(SUM(points), 0) AS s FROM risk_events WHERE ip = ? AND occurred_at >= ?",
+            (ip_address, window_start),
+        ).fetchone()["s"]
+
+        c.execute(
+            "INSERT INTO risk_events (ip, event_type, points, occurred_at) VALUES (?, ?, ?, ?)",
+            (ip_address, event_type, points, now),
+        )
+        # Housekeeping: drop events that have aged out of every IP's window
+        # so this table doesn't grow forever.
+        c.execute("DELETE FROM risk_events WHERE occurred_at < ?", (window_start,))
+
+        return previous_score, previous_score + points
+
+    if conn is not None:
+        previous_score, new_score = _apply(conn)
+    else:
+        with db.get_connection() as c:
+            previous_score, new_score = _apply(c)
+
+    triggered = previous_score < config.HONEYPOT_TRIGGER_THRESHOLD <= new_score
+    return new_score, triggered
+
+def get_ip_risk_score(ip_address):
+    """Return an IP's current windowed risk score (0 if none in-window)."""
+    window_start = time.time() - config.RISK_SCORE_WINDOW_SECONDS
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(points), 0) AS s FROM risk_events WHERE ip = ? AND occurred_at >= ?",
+            (ip_address, window_start),
+        ).fetchone()
+    return row["s"]
+
+def record_port_touch(ip_address, port, conn=None):
+    """Record that an IP attempted to use a given (virtual/simulated) port,
+    and treat touching several distinct ports in a short window as a port
+    scan. See record_suspicious_event() for the `conn` reuse rule.
+
+    Returns True if this touch caused the honeypot trigger threshold to be
+    crossed via the resulting "port_scan" event.
+    """
+    port = _coerce_port(port)
+    now = time.time()
+    window_start = now - config.PORT_SCAN_WINDOW_SECONDS
+
+    def _apply(c):
+        c.execute(
+            "INSERT INTO port_touches (ip, port, touched_at) VALUES (?, ?, ?)",
+            (ip_address, port, now),
+        )
+        c.execute("DELETE FROM port_touches WHERE touched_at < ?", (window_start,))
+
+        distinct_ports = c.execute(
+            "SELECT COUNT(DISTINCT port) AS c FROM port_touches WHERE ip = ? AND touched_at >= ?",
+            (ip_address, window_start),
+        ).fetchone()["c"]
+
+        if distinct_ports < config.PORT_SCAN_DISTINCT_PORTS:
+            return False
+
+        _, triggered = record_suspicious_event(ip_address, "port_scan", conn=c)
+        return triggered
+
+    if conn is not None:
+        return _apply(conn)
+    with db.get_connection() as c:
+        return _apply(c)
+
+# ----------------------
 # Password Hashing
 # ----------------------
 # Passwords are never stored or compared in plaintext. Each password gets a
@@ -95,6 +199,19 @@ def check_login(username, password, ip_address, port):
         if len(username) < 3 or len(password) < 3:
             return "error", "Invalid username/password length"
 
+        # Port-scan detection: touching many different (virtual) ports
+        # quickly is itself suspicious, independent of whether the
+        # credentials on any given attempt are correct. If this pushes the
+        # IP's risk score over the threshold, flag *this* port's honeypot
+        # immediately - the lookup right below will then see it.
+        if port is not None:
+            scan_triggered = record_port_touch(ip_address, port, conn=conn)
+            if scan_triggered:
+                conn.execute(
+                    "UPDATE ports SET honeypot = 1, last_triggered = ? WHERE port = ?",
+                    (time.strftime("%Y-%m-%d %H:%M:%S"), port),
+                )
+
         # Check if the port has honeypot enabled
         port_row = conn.execute(
             "SELECT honeypot FROM ports WHERE port = ? AND status = 'active'", (port,)
@@ -127,26 +244,38 @@ def check_login(username, password, ip_address, port):
             )
             return "valid", None
 
-        # Failed attempt handling
+        # Failed attempt handling - a sliding window rather than an
+        # all-time counter, so attempts from long ago don't keep counting
+        # against a user forever.
         key = f"{username}:{ip_address}"
-        row = conn.execute("SELECT count FROM login_attempts WHERE key = ?", (key,)).fetchone()
-        count = (row["count"] if row else 0) + 1
         now = time.time()
+        window_start = now - config.LOGIN_ATTEMPT_WINDOW_SECONDS
 
-        if row:
-            conn.execute(
-                "UPDATE login_attempts SET count = ?, last_attempt_at = ? WHERE key = ?",
-                (count, now, key),
-            )
+        row = conn.execute(
+            "SELECT count, first_attempt_at FROM login_attempts WHERE key = ?", (key,)
+        ).fetchone()
+
+        if row and row["first_attempt_at"] >= window_start:
+            count = row["count"] + 1
+            first_attempt_at = row["first_attempt_at"]
         else:
-            conn.execute(
-                "INSERT INTO login_attempts (key, count, first_attempt_at, last_attempt_at) "
-                "VALUES (?, ?, ?, ?)",
-                (key, count, now, now),
-            )
+            # First-ever attempt, or the previous streak fell outside the
+            # window - start a fresh streak.
+            count = 1
+            first_attempt_at = now
 
-        # Check number of failed attempts - Allow 2 incorrect attempts
-        if count >= 2:
+        conn.execute(
+            "INSERT INTO login_attempts (key, count, first_attempt_at, last_attempt_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET count = excluded.count, "
+            "first_attempt_at = excluded.first_attempt_at, "
+            "last_attempt_at = excluded.last_attempt_at",
+            (key, count, first_attempt_at, now),
+        )
+
+        _, triggered = record_suspicious_event(ip_address, "failed_login", conn=conn)
+
+        if triggered:
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
                 "INSERT INTO potential_attackers "
@@ -157,7 +286,7 @@ def check_login(username, password, ip_address, port):
                 "attempts = excluded.attempts, "
                 "reason = excluded.reason, "
                 "timestamp = excluded.timestamp",
-                (username, ip_address, port, count, "2 or more failed login attempts", timestamp),
+                (username, ip_address, port, count, f"{count} failed login attempts within {config.LOGIN_ATTEMPT_WINDOW_SECONDS}s", timestamp),
             )
 
             # Enable honeypot on this port

@@ -64,6 +64,22 @@ CREATE TABLE IF NOT EXISTS login_attempts (
     first_attempt_at REAL,
     last_attempt_at REAL
 );
+
+CREATE TABLE IF NOT EXISTS risk_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    points INTEGER NOT NULL,
+    occurred_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_risk_events_ip_time ON risk_events(ip, occurred_at);
+
+CREATE TABLE IF NOT EXISTS port_touches (
+    ip TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    touched_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_port_touches_ip_time ON port_touches(ip, touched_at);
 """
 
 

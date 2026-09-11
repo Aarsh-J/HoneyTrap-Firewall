@@ -186,3 +186,98 @@ def test_toggle_port_status_updates_status_and_honeypot(fw):
 
 def test_toggle_port_status_unknown_port_returns_false(fw):
     assert fw.toggle_port_status(9999, status="active") is False
+
+
+# ----------------------
+# Risk scoring (record_suspicious_event)
+# ----------------------
+
+def test_record_suspicious_event_accumulates_score(fw, monkeypatch):
+    monkeypatch.setattr(config, "FAILED_LOGIN_POINTS", 3)
+    monkeypatch.setattr(config, "HONEYPOT_TRIGGER_THRESHOLD", 100)  # keep it from triggering here
+
+    fw.record_suspicious_event("9.9.9.9", "failed_login")
+    fw.record_suspicious_event("9.9.9.9", "failed_login")
+
+    assert fw.get_ip_risk_score("9.9.9.9") == 6
+
+
+def test_record_suspicious_event_triggers_only_on_the_crossing_call(fw, monkeypatch):
+    monkeypatch.setattr(config, "FAILED_LOGIN_POINTS", 5)
+    monkeypatch.setattr(config, "HONEYPOT_TRIGGER_THRESHOLD", 10)
+
+    _, triggered1 = fw.record_suspicious_event("9.9.9.9", "failed_login")  # score 5
+    assert triggered1 is False
+
+    _, triggered2 = fw.record_suspicious_event("9.9.9.9", "failed_login")  # score 10 - crosses
+    assert triggered2 is True
+
+    _, triggered3 = fw.record_suspicious_event("9.9.9.9", "failed_login")  # score 15 - already over
+    assert triggered3 is False
+
+
+def test_record_suspicious_event_unknown_type_scores_zero(fw):
+    new_score, triggered = fw.record_suspicious_event("9.9.9.9", "something_undefined")
+    assert new_score == 0
+    assert triggered is False
+
+
+# ----------------------
+# Port-scan detection (record_port_touch)
+# ----------------------
+
+def test_record_port_touch_ignores_repeated_same_port(fw):
+    for _ in range(5):
+        triggered = fw.record_port_touch("9.9.9.9", 8001)
+        assert triggered is False
+
+
+def test_record_port_touch_detects_distinct_port_scan(fw, monkeypatch):
+    monkeypatch.setattr(config, "PORT_SCAN_DISTINCT_PORTS", 3)
+    monkeypatch.setattr(config, "PORT_SCAN_POINTS", 10)
+    monkeypatch.setattr(config, "HONEYPOT_TRIGGER_THRESHOLD", 10)
+
+    assert fw.record_port_touch("9.9.9.9", 8001) is False
+    assert fw.record_port_touch("9.9.9.9", 8002) is False
+    assert fw.record_port_touch("9.9.9.9", 8003) is True  # 3rd distinct port crosses threshold
+
+
+def test_check_login_port_scan_flags_the_current_port(fw, monkeypatch):
+    monkeypatch.setattr(config, "PORT_SCAN_DISTINCT_PORTS", 3)
+    monkeypatch.setattr(config, "PORT_SCAN_POINTS", 10)
+    monkeypatch.setattr(config, "HONEYPOT_TRIGGER_THRESHOLD", 10)
+
+    fw.check_login("user", "wrong-password", "9.9.9.9", 8001)
+    fw.check_login("user", "wrong-password", "9.9.9.9", 8002)
+    status, _ = fw.check_login("user", "wrong-password", "9.9.9.9", 8003)
+
+    assert status == "fake"
+    ports = fw.get_ports()
+    port_8003 = next(p for p in ports if p["port"] == 8003)
+    assert port_8003["honeypot"] is True
+
+
+def test_login_attempts_streak_resets_after_window_expires(fw, monkeypatch):
+    """The failed-attempt *count* used for the potential_attackers record
+    should restart, not accumulate, once the previous streak has aged out
+    of LOGIN_ATTEMPT_WINDOW_SECONDS - independent of the separately-windowed
+    risk score checked in the record_suspicious_event tests above."""
+    monkeypatch.setattr(config, "LOGIN_ATTEMPT_WINDOW_SECONDS", 60)
+
+    fw.check_login("user", "wrong-password", "127.0.0.1", 8001)
+
+    # Simulate the first attempt having happened well outside the window
+    with db.get_connection() as conn:
+        conn.execute(
+            "UPDATE login_attempts SET first_attempt_at = ?, last_attempt_at = ? WHERE key = ?",
+            (time.time() - 120, time.time() - 120, "user:127.0.0.1"),
+        )
+
+    fw.check_login("user", "wrong-password", "127.0.0.1", 8001)
+
+    with db.get_connection() as conn:
+        row = conn.execute(
+            "SELECT count FROM login_attempts WHERE key = ?", ("user:127.0.0.1",)
+        ).fetchone()
+
+    assert row["count"] == 1  # streak restarted rather than becoming 2

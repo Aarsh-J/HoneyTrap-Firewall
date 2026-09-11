@@ -2,12 +2,10 @@
 
 ## Context
 
-The project (TLS + package restructure already done and verified in a prior
-session) is now feature-complete for the interview. The plan is to keep
-building it out afterward into a more complete portfolio piece:
+The project (TLS + package restructure is verified). The plan is to keep building it out afterward into a more complete portfolio piece:
 
 - **Quick**: unit tests, audit log of admin actions, type hints
-- **Medium** (excluding CA-signed certs): SQLite migration, structured JSON
+- **Medium**: SQLite migration, structured JSON
   logging, and port stealth — scoped down to a documentation fix, since
   genuine packet-level stealth needs raw-socket/firewall access this Windows
   dev machine can't reliably guarantee
@@ -21,7 +19,7 @@ features themselves, then the big concurrency rewrite last (once everything
 else is stable, so it only has to be ported to asyncio once), then a final
 type-hint/polish pass once the shape of the code has stopped changing.
 
-## Phase 1 — Safety net: unit tests + port-stealth doc fix
+## Phase 1 — Safety net: unit tests
 
 **Goal:** lock down current behavior before touching storage or concurrency.
 
@@ -39,15 +37,8 @@ type-hint/polish pass once the shape of the code has stopped changing.
   - A pytest fixture that points `config.DATA_DIR` (and therefore
     `firewall.USER_DB` etc.) at a `tmp_path` before each test via
     `monkeypatch`, so tests never touch the real `data/` directory.
-- Fix the port-stealth claim: update `README.md`'s "Port Stealth" section and
-  `firewall_interview.md` to say inactive ports simply aren't listened on
-  (today's actual behavior — the OS TCP stack replies with a normal RST,
-  which nmap reports as "closed"), and drop the "invisible to nmap" /
-  "filtered" framing, since true invisibility needs dropping SYN packets at
-  the firewall/OS level, which is out of scope here.
 
-**Verify:** `pytest tests/` passes; re-read the two doc files to confirm the
-port-stealth claim now matches reality.
+**Verify:** `pytest tests/` passes
 
 ## Phase 2 — SQLite migration
 
