@@ -6,15 +6,16 @@ import threading
 import json
 import time
 import firewall
+import tls
 from server_base import EnhancedSocketServer
 from protocol import MessageType
 
 #import port_stealth
 
 class HoneyTrapServer:
-    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001):
+    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001, use_ssl=False):
         """Initialize the HoneyTrap server"""
-        self.socket_server = EnhancedSocketServer(host, control_port, data_port)
+        self.socket_server = EnhancedSocketServer(host, control_port, data_port, use_ssl=use_ssl)
         self.register_message_handlers()
         self.inactivity_thread = None
     
@@ -240,9 +241,11 @@ def main():
         #except Exception as e:
         #    print(f"[-] Warning: Port stealth initialization error: {e}")
         
-        # Start the server with SSL disabled
+        # Generate a self-signed cert on first run (no-op if one already exists),
+        # then start the server with TLS enabled on both channels.
         # To run on multiple PCs, use host='0.0.0.0' to listen on all network interfaces
-        server = HoneyTrapServer(host='0.0.0.0', control_port=5000, data_port=5001)
+        tls.generate_self_signed_cert()
+        server = HoneyTrapServer(host='0.0.0.0', control_port=5000, data_port=5001, use_ssl=True)
         
         if server.start():
             print("[+] HoneyTrap Server started successfully")

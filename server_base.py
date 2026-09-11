@@ -7,21 +7,26 @@ import json
 import time
 import select
 import signal
+import ssl
 import sys
 
+from protocol import send_framed, recv_framed
+import tls
+
 class EnhancedSocketServer:
-    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001):
+    def __init__(self, host='0.0.0.0', control_port=5000, data_port=5001,
+                 use_ssl=False, certfile=tls.DEFAULT_CERT_PATH, keyfile=tls.DEFAULT_KEY_PATH):
         """Initialize the socket server with separate control and data ports"""
         self.host = host
         self.control_port = control_port
         self.data_port = data_port
-        
+
         # Create sockets
         self.control_socket = None
         self.data_socket = None
-        
-        # SSL contexts
-        self.ssl_context = None
+
+        # SSL context (None means plaintext)
+        self.ssl_context = tls.get_server_ssl_context(certfile, keyfile) if use_ssl else None
         
         # Connection lists
         self.control_connections = []
@@ -114,9 +119,21 @@ class EnhancedSocketServer:
                     continue
                 
                 sock.settimeout(None)
-                
+
+                # If TLS is enabled, complete the handshake before treating
+                # this as a usable connection. A bad handshake (e.g. a plain
+                # nmap probe, not a real TLS client) should just drop this
+                # one connection, not take down the accept loop.
+                if self.ssl_context:
+                    try:
+                        client_socket = self.ssl_context.wrap_socket(client_socket, server_side=True)
+                    except ssl.SSLError:
+                        print(f"[-] TLS handshake failed for {client_address[0]}:{client_address[1]}")
+                        client_socket.close()
+                        continue
+
                 print(f"[+] New {channel_type} connection from {client_address[0]}:{client_address[1]}")
-                
+
                 # Add to connection list
                 connection_info = {
                     'socket': client_socket,
@@ -153,39 +170,34 @@ class EnhancedSocketServer:
                 
                 if ready[0]:
                     # Socket has data to read
-                    data = client_socket.recv(4096)
-                    
-                    if not data:
-                        # Client disconnected
-                        self.close_connection(connection_info)
-                        break
-                    
-                    # Update last activity time
-                    connection_info['last_activity'] = time.time()
-                    
-                    # Try to parse JSON message
                     try:
-                        message_str = data.decode('utf-8')
-                        
-                        message = json.loads(message_str)
-                        
-                        # Extract command and handle it
-                        command = message.get('command')
-                        
-                        if command in self.message_handlers:
-                            response = self.message_handlers[command](message, connection_info)
-                            if response:
-                                # Send response back to client
-                                self.send_message(client_socket, response)
-                        else:
-                            # Unknown command
-                            response = {'status': 'error', 'message': f"Unknown command: {command}"}
-                            self.send_message(client_socket, response)
-                    
+                        message = recv_framed(client_socket)
                     except json.JSONDecodeError:
                         response = {'status': 'error', 'message': "Invalid request format"}
                         self.send_message(client_socket, response)
-            
+                        continue
+
+                    if message is None:
+                        # Client disconnected
+                        self.close_connection(connection_info)
+                        break
+
+                    # Update last activity time
+                    connection_info['last_activity'] = time.time()
+
+                    # Extract command and handle it
+                    command = message.get('command')
+
+                    if command in self.message_handlers:
+                        response = self.message_handlers[command](message, connection_info)
+                        if response:
+                            # Send response back to client
+                            self.send_message(client_socket, response)
+                    else:
+                        # Unknown command
+                        response = {'status': 'error', 'message': f"Unknown command: {command}"}
+                        self.send_message(client_socket, response)
+
             except ConnectionError:
                 self.close_connection(connection_info)
                 break
@@ -197,8 +209,7 @@ class EnhancedSocketServer:
     def send_message(self, client_socket, message):
         """Send a JSON message to a client"""
         try:
-            response_data = json.dumps(message).encode('utf-8')
-            client_socket.sendall(response_data)
+            send_framed(client_socket, message)
             return True
         except Exception:
             return False
