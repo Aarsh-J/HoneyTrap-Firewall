@@ -6,7 +6,7 @@ import json
 import threading
 import time
 import select
-from protocol import MessageType
+from protocol import MessageType, send_framed, recv_framed
 
 class HoneyTrapClient:
     """Client for connecting to the HoneyTrap server"""
@@ -114,21 +114,19 @@ class HoneyTrapClient:
             return False
         
         try:
-            message_data = json.dumps(message).encode('utf-8')
-            self.control_socket.sendall(message_data)
+            send_framed(self.control_socket, message)
             return True
         except Exception:
             self.disconnect()
             return False
-    
+
     def send_data_message(self, message):
         """Send a message on the data channel"""
         if not self.connected or not self.data_socket:
             return False
-        
+
         try:
-            message_data = json.dumps(message).encode('utf-8')
-            self.data_socket.sendall(message_data)
+            send_framed(self.data_socket, message)
             return True
         except Exception:
             self.disconnect()
@@ -145,18 +143,16 @@ class HoneyTrapClient:
                 
                 for sock in readable:
                     try:
-                        data = sock.recv(4096)
-                        
-                        if not data:
+                        message = recv_framed(sock)
+
+                        if message is None:
                             # Server disconnected
                             self.disconnect()
                             return
-                        
-                        # Process the message
-                        message = json.loads(data.decode('utf-8'))
+
                         channel_type = "control" if sock == self.control_socket else "data"
                         self.process_message(message, channel_type)
-                        
+
                     except json.JSONDecodeError:
                         pass
                     except Exception:

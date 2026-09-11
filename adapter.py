@@ -36,8 +36,8 @@ class LoginHandler:
             return {"status": "error", "message": "Username and password must be at least 3 characters"}
         
         # Check if these are admin credentials before applying firewall rules
-        from firewall import ADMIN_USERNAME, ADMIN_PASSWORD
-        admin_login = (username == ADMIN_USERNAME and password == ADMIN_PASSWORD)
+        from firewall import ADMIN_USERNAME, ADMIN_PASSWORD_HASH, ADMIN_PASSWORD_SALT, verify_password
+        admin_login = (username == ADMIN_USERNAME and verify_password(password, ADMIN_PASSWORD_SALT, ADMIN_PASSWORD_HASH))
         
         # For admin login, ensure we use a non-honeypot port
         if admin_login and port is None:

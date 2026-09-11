@@ -1,7 +1,11 @@
 # ===========================================
 # HoneyTrap Firewall - Core Rules Engine
 # ===========================================
+import hashlib
+import hmac
 import json
+import os
+import secrets
 import time
 
 # ----------------------
@@ -19,6 +23,51 @@ def save_json(file, data):
         json.dump(data, f, indent=4)
 
 # ----------------------
+# .env Loader
+# ----------------------
+def load_env_file(path=".env"):
+    """Load KEY=VALUE pairs from a .env file into os.environ.
+
+    Only sets variables that aren't already set, so real environment
+    variables always take precedence over the file.
+    """
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key.strip(), value.strip())
+    except FileNotFoundError:
+        pass
+
+load_env_file()
+
+# ----------------------
+# Password Hashing
+# ----------------------
+# Passwords are never stored or compared in plaintext. Each password gets a
+# random per-user salt, hashed with PBKDF2-HMAC-SHA256, and verified with a
+# constant-time comparison to avoid leaking timing information.
+HASH_ITERATIONS = 100_000
+
+def hash_password(password, salt=None):
+    """Hash a password with a random (or given) salt. Returns (hash_hex, salt_hex)."""
+    if salt is None:
+        salt = secrets.token_bytes(16)
+    elif isinstance(salt, str):
+        salt = bytes.fromhex(salt)
+
+    digest = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, HASH_ITERATIONS)
+    return digest.hex(), salt.hex()
+
+def verify_password(password, salt_hex, hash_hex):
+    """Check a password against a stored salt+hash using a constant-time comparison."""
+    candidate_hash, _ = hash_password(password, salt_hex)
+    return hmac.compare_digest(candidate_hash, hash_hex)
+
+# ----------------------
 # Constants
 # ----------------------
 USER_DB = "users.json"
@@ -28,8 +77,12 @@ SESSIONS_DB = "sessions.json"
 PORTS_DB = "ports.json"
 BANNED_IPS = "banned_ips.json"
 
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
+# Admin credentials are read from the environment rather than hardcoded so the
+# real password never lives in source control. Falls back to a dev default.
+ADMIN_USERNAME = os.environ.get("HONEYTRAP_ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD_HASH, ADMIN_PASSWORD_SALT = hash_password(
+    os.environ.get("HONEYTRAP_ADMIN_PASSWORD", "admin123")
+)
 INACTIVITY_LIMIT = 300  # 5 minutes for inactivity timeout
 
 # Track login attempts
@@ -46,8 +99,9 @@ def create_user(username, password):
     if username in users:
         return False, "Username already exists"
     
-    # Create new user
-    users[username] = password
+    # Create new user with a hashed, salted password
+    password_hash, salt = hash_password(password)
+    users[username] = {"hash": password_hash, "salt": salt}
     save_json(USER_DB, users)
     return True, "User created successfully"
 
@@ -66,7 +120,7 @@ def check_login(username, password, ip_address, port):
     potential_attackers = load_json(POTENTIAL_ATTACKERS)
     
     # Admin login check - must be first to bypass all other checks
-    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+    if username == ADMIN_USERNAME and verify_password(password, ADMIN_PASSWORD_SALT, ADMIN_PASSWORD_HASH):
         return "admin", None
     
     # Check if IP is banned
@@ -89,7 +143,7 @@ def check_login(username, password, ip_address, port):
         return "fake", None
     
     # Regular user login
-    if username in users and users[username] == password:
+    if username in users and verify_password(password, users[username]["salt"], users[username]["hash"]):
         # Reset login attempts for this user+IP if successful
         key = f"{username}:{ip_address}"
         if key in LOGIN_ATTEMPTS:
@@ -329,7 +383,8 @@ def initialize_files():
         users = load_json(USER_DB)
         if not users:
             # Create a default test user if none exist
-            users = {"user": "password"}
+            password_hash, salt = hash_password("password")
+            users = {"user": {"hash": password_hash, "salt": salt}}
             save_json(USER_DB, users)
             
     except Exception as e:

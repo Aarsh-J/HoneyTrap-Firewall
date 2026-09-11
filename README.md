@@ -98,7 +98,7 @@ python main.py
 
 ### Default Admin Credentials
 - Username: `admin`
-- Password: `admin123`
+- Password: `admin123` (override via the `HONEYTRAP_ADMIN_USERNAME` / `HONEYTRAP_ADMIN_PASSWORD` environment variables; the password is never stored in plaintext, only as a salted PBKDF2 hash in memory)
 
 ### Default User Credentials
 - Username: `user`

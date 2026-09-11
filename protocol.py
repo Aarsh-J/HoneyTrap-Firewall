@@ -35,6 +35,52 @@ class MessageType:
 PROTOCOL_VERSION = "1.0"
 
 # ----------------------
+# 📦 Message Framing
+# ----------------------
+# TCP is a byte stream, not a message stream: a single send() can arrive
+# split across several recv() calls, and several small send() calls can
+# coalesce into one recv(). A raw recv(4096) -> json.loads() assumes message
+# boundaries that TCP doesn't guarantee, so every message is prefixed with a
+# 4-byte big-endian length header.
+HEADER_SIZE = 4
+
+def recv_exact(sock, num_bytes):
+    """Read exactly num_bytes from sock, blocking until they arrive.
+
+    Returns None if the connection is closed before num_bytes are read.
+    """
+    buf = bytearray()
+    while len(buf) < num_bytes:
+        chunk = sock.recv(num_bytes - len(buf))
+        if not chunk:
+            return None
+        buf.extend(chunk)
+    return bytes(buf)
+
+def send_framed(sock, message):
+    """Encode message as JSON and send it prefixed with its length."""
+    payload = json.dumps(message).encode('utf-8')
+    header = len(payload).to_bytes(HEADER_SIZE, byteorder='big')
+    sock.sendall(header + payload)
+
+def recv_framed(sock):
+    """Receive one length-prefixed JSON message from sock.
+
+    Returns None if the connection was closed.
+    Raises json.JSONDecodeError if the payload isn't valid JSON.
+    """
+    header = recv_exact(sock, HEADER_SIZE)
+    if header is None:
+        return None
+
+    length = int.from_bytes(header, byteorder='big')
+    payload = recv_exact(sock, length)
+    if payload is None:
+        return None
+
+    return json.loads(payload.decode('utf-8'))
+
+# ----------------------
 # 📝 Message Creation Helpers
 # ----------------------
 def create_login_message(username, password, port=None):
